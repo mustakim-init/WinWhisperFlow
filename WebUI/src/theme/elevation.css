@@ -1,0 +1,8 @@
+:root {
+  --md-sys-elevation-0: none;
+  --md-sys-elevation-1: 0 2px 8px 0 rgba(0,0,0,0.10);
+  --md-sys-elevation-2: 0 4px 16px 0 rgba(0,0,0,0.14);
+  --md-sys-elevation-3: 0 6px 20px 0 rgba(0,0,0,0.18);
+  --md-sys-elevation-4: 0 12px 32px 0 rgba(0,0,0,0.22);
+  --md-sys-elevation-5: 0 20px 48px 0 rgba(0,0,0,0.28);
+}

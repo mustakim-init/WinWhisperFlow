@@ -1,0 +1,32 @@
+# Build outputs
+bin/
+obj/
+dist/
+artifacts/
+
+# Dependencies
+node_modules/
+
+# Python
+.virtualenvs/
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.vs/
+.vscode/
+*.user
+*.suo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# material-web is cloned for reference only
+material-web/

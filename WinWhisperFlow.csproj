@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWPF>true</UseWPF>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4022.49" />
+    <PackageReference Include="NAudio" Version="2.2.1" />
+    <PackageReference Include="System.Management" Version="10.0.9" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="stt_engine\config.json" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="stt_engine\requirements.txt" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="stt_engine\preload_model.py" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="stt_engine\whisper_worker.py" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="stt_engine\whisper_worker_gpu.py" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="stt_engine\download_gpu_model.py" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="stt_engine\requirements_gpu.txt" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="stt_engine\dist\whisper_worker.exe" Condition="Exists('stt_engine\dist\whisper_worker.exe')" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="stt_engine\dist\whisper_worker_gpu.exe" Condition="Exists('stt_engine\dist\whisper_worker_gpu.exe')" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="WebUI\dist\**\*" CopyToOutputDirectory="PreserveNewest" Link="WebUI\dist\%(RecursiveDir)%(Filename)%(Extension)" />
+  </ItemGroup>
+
+  <Target Name="BuildWebUI" BeforeTargets="Build" Condition="Exists('$(ProjectDir)WebUI\package.json')">
+    <Message Importance="high" Text="Building WebUI..." />
+    <Exec Command="npm run build" WorkingDirectory="$(ProjectDir)WebUI" />
+  </Target>
+</Project>
