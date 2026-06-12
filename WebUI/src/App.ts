@@ -45,8 +45,8 @@ export function buildApp(container: HTMLElement): void {
     <div class="flex flex-col h-full bg-background text-on-background font-sans overflow-hidden">
       <!-- Top Bar -->
       <div class="flex items-center gap-3 px-5 py-3 bg-surface-container border-b border-outline-variant shrink-0 select-none">
-        <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-primary to-primary-container flex items-center justify-center shrink-0 shadow-sm">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--md-sys-color-on-primary)" stroke-width="2" stroke-linecap="round"><path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/></svg>
+        <div class="w-10 h-10 rounded-xl shrink-0 overflow-hidden">
+          <img src="/Icon.png" alt="mic" class="w-full h-full object-cover" />
         </div>
         <div class="flex-1 flex items-center gap-3 min-w-0">
           <div class="text-lg font-semibold tracking-tight">WinWhisper Flow</div>

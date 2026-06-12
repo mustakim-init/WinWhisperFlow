@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Windows;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.Wpf;
@@ -33,12 +34,25 @@ public partial class MainWindow : Window
         InitializeComponent();
         Closing += OnClosing;
         Loaded += OnLoaded;
+        SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
+    }
+
+    private void OnUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs e)
+    {
+        if (e.Category == UserPreferenceCategory.General)
+        {
+            Dispatcher.Invoke(() =>
+            {
+                ApplyThemeToTitleBar();
+            });
+        }
     }
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {
         try
         {
+            ApplyThemeToTitleBar();
             CreateTrayIcon();
             AppendLog($"BaseDirectory: {AppContext.BaseDirectory}");
 
@@ -176,6 +190,27 @@ public partial class MainWindow : Window
         catch { return false; }
     }
 
+    [DllImport("dwmapi.dll")]
+    private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
+
+    private const int DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1 = 19;
+    private const int DWMWA_USE_IMMERSIVE_DARK_MODE = 20;
+
+    private void ApplyThemeToTitleBar()
+    {
+        bool isDark = DetectWindowsDarkMode();
+        var hwnd = new System.Windows.Interop.WindowInteropHelper(this).Handle;
+        if (hwnd == IntPtr.Zero) return;
+        
+        int useImmersiveDarkMode = isDark ? 1 : 0;
+        
+        int result = DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, ref useImmersiveDarkMode, sizeof(int));
+        if (result != 0)
+        {
+            DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1, ref useImmersiveDarkMode, sizeof(int));
+        }
+    }
+
     private void OnWebViewInitialized(object? sender, CoreWebView2InitializationCompletedEventArgs e)
     {
         if (!e.IsSuccess)
@@ -206,9 +241,12 @@ public partial class MainWindow : Window
             Close();
         }));
 
+        string iconPath = Path.Combine(AppContext.BaseDirectory, "Icon.ico");
+        Drawing.Icon trayIcon = File.Exists(iconPath) ? new Drawing.Icon(iconPath) : Drawing.SystemIcons.Application;
+
         _notifyIcon = new Forms.NotifyIcon
         {
-            Icon = Drawing.SystemIcons.Application,
+            Icon = trayIcon,
             Text = "WinWhisper Flow",
             Visible = true,
             ContextMenuStrip = menu
@@ -237,6 +275,7 @@ public partial class MainWindow : Window
             return;
         }
 
+        SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
         _initCts?.Cancel();
         _initCts?.Dispose();
         _bridge?.Dispose();
