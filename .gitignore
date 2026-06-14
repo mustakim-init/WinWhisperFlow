@@ -28,5 +28,9 @@ Thumbs.db
 # Logs
 *.log
 
+# Separate git repos — tracked independently
+whispermicrelay/
+PhoneMicVirtualCable/
+
 # material-web is cloned for reference only
 material-web/
