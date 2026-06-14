@@ -26,8 +26,6 @@ SHERPA_MODEL_MAP = {
 SAMPLE_RATE = 16000
 N_FFT = 400
 HOP_LENGTH = 160
-N_FRAMES = 3000
-N_PAD_FRAMES = 1500
 
 
 def load_config():
@@ -60,14 +58,14 @@ def find_model_files(model_name):
     tokens = _find_file(model_dir, f"{prefix}-tokens.txt")
 
     if encoder and decoder and tokens:
-        return encoder, decoder, tokens
+        return encoder, decoder, tokens, False
 
     encoder = _find_file(model_dir, f"{prefix}-encoder.int8.onnx")
     decoder = _find_file(model_dir, f"{prefix}-decoder.int8.onnx")
     if encoder and decoder and tokens:
         sys.stderr.write("WARN: Using int8 model (FP32 not found, falling back to CPU)\n")
         sys.stderr.flush()
-        return encoder, decoder, tokens
+        return encoder, decoder, tokens, True
 
     raise FileNotFoundError(
         f"Model not found in {model_dir}. "
@@ -86,9 +84,29 @@ def load_tokens(filename):
 
 
 def load_audio(path):
-    import soundfile as sf
-    data, sr = sf.read(path, always_2d=True, dtype="float32")
-    data = data[:, 0]
+    try:
+        import soundfile as sf
+        data, sr = sf.read(path, always_2d=True, dtype="float32")
+        data = data[:, 0]
+    except ImportError as exc:
+        # PyInstaller packaging can sometimes miss optional/native deps.
+        # Fallback to librosa loader when possible, otherwise raise a clear error.
+        if librosa is None:
+            raise ImportError(
+                "Missing dependency 'soundfile' required to load audio in whisper_worker_gpu.py. "
+                "Install soundfile>=0.12.1 and rebuild/bundle the GPU worker."
+            ) from exc
+
+        try:
+            data, sr = librosa.load(path, sr=SAMPLE_RATE, mono=True)
+            data = data.astype(np.float32, copy=False)
+        except Exception as exc2:
+            raise ImportError(
+                "Failed to load audio without 'soundfile'. "
+                "Ensure 'soundfile>=0.12.1' is available in the GPU worker environment "
+                "(rebuild PyInstaller bundle)."
+            ) from exc2
+
     if sr != SAMPLE_RATE:
         if librosa is not None:
             data = librosa.resample(data, orig_sr=sr, target_sr=SAMPLE_RATE)
@@ -97,12 +115,19 @@ def load_audio(path):
             new_len = int(old_len * SAMPLE_RATE / sr)
             data = np.interp(np.linspace(0, old_len - 1, new_len),
                              np.arange(old_len), data)
+
     return np.ascontiguousarray(data), SAMPLE_RATE
 
 
-def compute_features(audio, sr, n_mels):
+def compute_features(audio, sr, n_mels, expected_frames):
+    if librosa is None:
+        raise ImportError(
+            "Missing required dependency 'librosa' for feature computation. "
+            "Install librosa>=0.10.0 in the GPU worker environment."
+        )
+
     frames = librosa.frames_to_time(
-        np.arange(N_FRAMES + N_PAD_FRAMES),
+        np.arange(expected_frames + expected_frames // 2),
         sr=SAMPLE_RATE, hop_length=HOP_LENGTH, n_fft=N_FFT
     )
 
@@ -125,11 +150,10 @@ def compute_features(audio, sr, n_mels):
     mel_norm = (log_spec + 4.0) / 4.0
 
     T = mel_norm.shape[1]
-    target = N_FRAMES
-    if T >= target:
-        mel_norm = mel_norm[:, :target]
+    if T >= expected_frames:
+        mel_norm = mel_norm[:, :expected_frames]
     else:
-        mel_norm = np.pad(mel_norm, ((0, 0), (0, target - T)), mode="constant")
+        mel_norm = np.pad(mel_norm, ((0, 0), (0, expected_frames - T)), mode="constant")
 
     return mel_norm[np.newaxis, :, :].astype(np.float32)
 
@@ -155,6 +179,8 @@ class WhisperModel:
         self.n_text_ctx = int(meta["n_text_ctx"])
         self.n_text_state = int(meta["n_text_state"])
         self.n_mels = int(meta["n_mels"])
+        encoder_input_shape = self.encoder.get_inputs()[0].shape
+        self.expected_mel_frames = encoder_input_shape[2] if len(encoder_input_shape) >= 3 and encoder_input_shape[2] is not None else 3000
         self.sot_id = int(meta["sot"])
         self.eot_id = int(meta["eot"])
         self.translate_id = int(meta["translate"])
@@ -208,12 +234,11 @@ class WhisperModel:
             logits[self.blank_id] = float("-inf")
         logits[self.no_timestamps_id] = float("-inf")
         logits[self.sot_id] = float("-inf")
-        logits[self.no_speech_id] = float("-inf")
         logits[self.translate_id] = float("-inf")
 
-    def transcribe(self, audio_path, language="en"):
+    def transcribe(self, audio_path, language="en", no_speech_threshold=0.72, log_prob_threshold=-0.8):
         audio, sr = load_audio(audio_path)
-        mel = compute_features(audio, sr, self.n_mels)
+        mel = compute_features(audio, sr, self.n_mels, self.expected_mel_frames)
 
         cross_k, cross_v = self.run_encoder(mel)
 
@@ -230,8 +255,15 @@ class WhisperModel:
             np.zeros(1, dtype=np.int64),
         )
         logits_vec = logits[0, -1].copy()
-        self.suppress_tokens(logits_vec, is_initial=True)
+        self.suppress_tokens(logits_vec, is_initial=False)
         next_token = int(logits_vec.argmax())
+
+        if next_token == self.no_speech_id:
+            no_speech_prob = float(np.exp(logits_vec[self.no_speech_id]) / np.sum(np.exp(logits_vec)))
+            if no_speech_prob > no_speech_threshold:
+                return ""
+            logits_vec[self.no_speech_id] = float("-inf")
+            next_token = int(logits_vec.argmax())
 
         results = []
         for i in range(self.n_text_ctx):
@@ -265,22 +297,22 @@ def main():
     config = load_config()
     model_name = os.environ.get("WINWHISPER_MODEL", config.get("model", "small"))
     default_language = os.environ.get("WINWHISPER_LANGUAGE", config.get("default_language", "en"))
-    no_speech_threshold = float(os.environ.get("WINWHISPER_NO_SPEECH_THRESHOLD", str(config.get("no_speech_threshold", 0.72))))
+    no_speech_threshold = float(os.environ.get("WINWHISPER_NO_SPEECH_THRESHOLD", str(config.get("no_speech_threshold", 0.45))))
     log_prob_threshold = float(os.environ.get("WINWHISPER_LOG_PROB_THRESHOLD", str(config.get("log_prob_threshold", -0.8))))
 
     try:
-        encoder_path, decoder_path, tokens_path = find_model_files(model_name)
+        encoder_path, decoder_path, tokens_path, is_int8 = find_model_files(model_name)
     except FileNotFoundError as exc:
         write({"ready": False, "error": str(exc)})
         sys.exit(1)
 
-    is_int8 = ".int8." in encoder_path
     available = onnxruntime.get_available_providers()
 
     if is_int8:
         providers = ["CPUExecutionProvider"]
+        sys.stderr.write("WARN: Using int8 quantized model on CPU (FP32 model not available)\n")
+        sys.stderr.flush()
     else:
-        # Prefer CUDA, fall back to DML, then CPU
         providers = ["CPUExecutionProvider"]
         if "CUDAExecutionProvider" in available:
             providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
@@ -316,7 +348,12 @@ def main():
 
             audio_path = request["audio_path"]
             language = request.get("language") or default_language
-            text = model.transcribe(audio_path, language)
+            text = model.transcribe(
+                audio_path,
+                language,
+                no_speech_threshold=no_speech_threshold,
+                log_prob_threshold=log_prob_threshold,
+            )
 
             write({
                 "text": text,
@@ -324,7 +361,7 @@ def main():
                 "language_probability": 1.0,
                 "segment_count": 1,
                 "avg_log_probability": None,
-                "no_speech_probability": None,
+                "no_speech_probability": None if text else 1.0,
             })
         except Exception as exc:
             write({"error": str(exc)})

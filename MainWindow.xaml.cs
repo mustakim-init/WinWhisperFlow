@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
@@ -56,7 +57,10 @@ public partial class MainWindow : Window
             CreateTrayIcon();
             AppendLog($"BaseDirectory: {AppContext.BaseDirectory}");
 
-            var env = await CoreWebView2Environment.CreateAsync(null, null, new CoreWebView2EnvironmentOptions
+            string webviewData = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "WinWhisperFlow", "WebView2");
+            var env = await CoreWebView2Environment.CreateAsync(null, webviewData, new CoreWebView2EnvironmentOptions
             {
                 AdditionalBrowserArguments = "--disable-features=msWebView2PdfDownload"
             });
@@ -225,7 +229,10 @@ public partial class MainWindow : Window
             Directory.CreateDirectory(Path.GetDirectoryName(RuntimePaths.LogPath)!);
             File.AppendAllText(RuntimePaths.LogPath, line + Environment.NewLine);
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Debug.WriteLine($"[AppendLog] Failed to write log: {ex.Message}");
+        }
     }
 
     public void SetStartMinimized() => _startMinimized = true;

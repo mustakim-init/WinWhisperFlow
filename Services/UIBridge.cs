@@ -26,6 +26,7 @@ public sealed class UIBridge : IDisposable
     private string _loadedModel = "small";
     private string _loadedDevice = "cpu";
     private IntPtr _targetWindow;
+    private CancellationTokenSource? _streamCts;
 
     public UIBridge(
         WebView2 webView,
@@ -71,6 +72,9 @@ public sealed class UIBridge : IDisposable
             }
         };
 
+        _phoneMic.LogMessage += (_, msg) =>
+            Post(new { type = "log", message = msg });
+
         _webView.CoreWebView2.WebMessageReceived += OnWebMessage;
     }
 
@@ -95,92 +99,113 @@ public sealed class UIBridge : IDisposable
     {
         try
         {
-            if (_webView.CoreWebView2 is null) return;
+            var core = _webView.CoreWebView2;
+            if (core is null) return;
             string json = JsonSerializer.Serialize(msg);
-            _webView.Dispatcher.Invoke(() =>
-                _webView.CoreWebView2.PostWebMessageAsJson(json));
+            _ = _webView.Dispatcher.BeginInvoke(() => core.PostWebMessageAsJson(json));
         }
         catch (Exception ex)
         {
-            try
-            {
-                File.AppendAllText(RuntimePaths.LogPath,
-                    $"[UIBridge.Post] {ex.Message}{Environment.NewLine}");
-            }
-            catch { }
+            LogError($"[UIBridge.Post] {ex.Message}");
         }
     }
 
-    public async Task ToggleListeningAsync()
+    public Task ToggleListeningAsync()
     {
         if (_audio.IsListening)
         {
+            CancelStreaming();
+
             string? path = _audio.Stop();
             _overlay?.ShowTranscribing();
             Post(new { type = "listening_status", listening = false });
             Post(new { type = "status_update", text = "Transcribing\u2026", variant = "warning" });
             if (path is not null)
             {
-                try
-                {
-                    var result = await _whisper.TranscribeAsync(path, GetSelectedLanguage());
-                    await PublishTranscriptionAsync(
-                        result.Text.Trim(),
-                        result.Language,
-                        result.LanguageProbability,
-                        "mic",
-                        inject: true,
-                        isPartial: false);
-                }
-                catch (Exception ex)
-                {
-                    Post(new { type = "log", message = $"Transcription error: {ex.Message}" });
-                    Post(new { type = "status_update", text = "Error", variant = "error" });
-                }
-                try { File.Delete(path); } catch { }
+                return FinalizeTranscriptionAsync(path);
             }
             Post(new { type = "status_update", text = "Ready", variant = "success" });
+            return Task.CompletedTask;
         }
-        else
+
+        if (!_modelLoaded)
         {
-            if (!_modelLoaded)
-            {
-                Post(new { type = "log", message = "Model not loaded yet" });
-                Post(new { type = "notification", title = "Model not ready", message = "Load or set up the speech model before listening.", variant = "warning" });
-                return;
-            }
-
-            _targetWindow = WindowFocusService.GetForegroundWindowHandle();
-            if (WindowFocusService.BelongsToCurrentProcess(_targetWindow))
-            {
-                _targetWindow = IntPtr.Zero;
-            }
-
-            _audio.Start();
-            _overlay?.ShowListening();
-            Post(new { type = "listening_status", listening = true });
-            Post(new { type = "status_update", text = "Listening\u2026", variant = "warning" });
-            _ = StartStreamingLoopAsync();
+            Post(new { type = "log", message = "Model not loaded yet" });
+            Post(new { type = "notification", title = "Model not ready", message = "Load or set up the speech model before listening.", variant = "warning" });
+            return Task.CompletedTask;
         }
 
-        await Task.CompletedTask;
+        _targetWindow = WindowFocusService.GetForegroundWindowHandle();
+        if (WindowFocusService.BelongsToCurrentProcess(_targetWindow))
+        {
+            _targetWindow = IntPtr.Zero;
+        }
+
+        _streamCts = new CancellationTokenSource();
+
+        _audio.Start();
+        _overlay?.ShowListening();
+        Post(new { type = "listening_status", listening = true });
+        Post(new { type = "status_update", text = "Listening\u2026", variant = "warning" });
+        _ = StartStreamingLoopAsync(_streamCts.Token);
+        return Task.CompletedTask;
     }
 
-    private async Task StartStreamingLoopAsync()
+    private void CancelStreaming()
     {
-        while (_audio.IsListening)
+        if (_streamCts is not null)
         {
-            await Task.Delay(1000);
-            if (!_audio.IsListening) break;
+            _streamCts.Cancel();
+            _streamCts.Dispose();
+            _streamCts = null;
+        }
+    }
+
+    private async Task FinalizeTranscriptionAsync(string path)
+    {
+        try
+        {
+            var result = await _whisper.TranscribeAsync(path, GetSelectedLanguage());
+            await PublishTranscriptionAsync(
+                result.Text.Trim(),
+                result.Language,
+                result.LanguageProbability,
+                "mic",
+                inject: true,
+                isPartial: false);
+        }
+        catch (Exception ex)
+        {
+            Post(new { type = "log", message = $"Transcription error: {ex.Message}" });
+            Post(new { type = "status_update", text = "Error", variant = "error" });
+        }
+        finally
+        {
+            try { File.Delete(path); } catch (Exception ex) { LogError($"[UIBridge] Cleanup delete failed: {ex.Message}"); }
+            Post(new { type = "status_update", text = "Ready", variant = "success" });
+        }
+    }
+
+    private async Task StartStreamingLoopAsync(CancellationToken ct)
+    {
+        while (_audio.IsListening && !ct.IsCancellationRequested)
+        {
+            try
+            {
+                await Task.Delay(1000, ct);
+            }
+            catch (OperationCanceledException) { break; }
+
+            if (!_audio.IsListening || ct.IsCancellationRequested) break;
 
             string? snapPath = _audio.GetTemporarySnapshot();
             if (snapPath is null) continue;
 
             try
             {
-                var result = await _whisper.TranscribeAsync(snapPath, GetSelectedLanguage());
+                var result = await _whisper.TranscribeAsync(snapPath, GetSelectedLanguage(), ct);
                 string text = result.Text.Trim();
-                if (!string.IsNullOrWhiteSpace(text) && _audio.IsListening)
+                if (!string.IsNullOrWhiteSpace(text) && _audio.IsListening && !ct.IsCancellationRequested)
                 {
                     _overlay?.ShowTranscribing();
                     await PublishTranscriptionAsync(
@@ -192,15 +217,19 @@ public sealed class UIBridge : IDisposable
                         isPartial: true);
                 }
             }
-            catch { /* Ignore partial errors */ }
+            catch (OperationCanceledException) { break; }
+            catch (Exception ex)
+            {
+                Post(new { type = "log", message = $"Streaming partial error: {ex.Message}" });
+            }
             finally
             {
-                try { File.Delete(snapPath); } catch { }
+                try { File.Delete(snapPath); } catch (Exception ex) { LogError($"[UIBridge] Snapshot delete failed: {ex.Message}"); }
             }
         }
     }
 
-    private async void OnWebMessage(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
+    private void OnWebMessage(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
         try
         {
@@ -208,12 +237,16 @@ public sealed class UIBridge : IDisposable
             if (payload is null) return;
             using JsonDocument doc = JsonDocument.Parse(payload);
             JsonElement root = doc.RootElement;
-            string type = root.GetProperty("type").GetString() ?? "";
+
+            if (!root.TryGetProperty("type", out var typeProp))
+            {
+                Post(new { type = "log", message = "Bridge message missing 'type'" });
+                return;
+            }
+            string type = typeProp.GetString() ?? "";
 
             switch (type)
             {
-                case "_ping":
-                    break;
                 case "bridge_ready":
                     SendInitState();
                     break;
@@ -224,15 +257,15 @@ public sealed class UIBridge : IDisposable
                     catch { }
                     break;
                 case "toggle_listening":
-                    await ToggleListeningAsync();
+                    _ = ToggleListeningAsync();
                     break;
                 case "load_model":
-                    await LoadModelAsync(
+                    _ = LoadModelAsync(
                         root.GetProperty("model").GetString() ?? "small",
                         root.GetProperty("gpu").GetBoolean());
                     break;
                 case "setup_runtime":
-                    await SetupRuntimeAsync();
+                    _ = SetupRuntimeAsync();
                     break;
                 case "phone_mic_toggle":
                     if (_phoneMic.IsRunning)
@@ -399,10 +432,11 @@ public sealed class UIBridge : IDisposable
         if (isPartial)
         {
             _overlay?.ShowTranscribing();
-            return; // Don't inject or save history for partial chunks
+            return;
         }
 
-        Post(new { type = "log", message = $"Transcribed: {text[..Math.Min(text.Length, 60)]}" });
+        string preview = text.Length > 60 ? text[..60] : text;
+        Post(new { type = "log", message = $"Transcribed: {preview}" });
 
         string action = "copied";
         if (inject && _targetWindow != IntPtr.Zero)
@@ -440,9 +474,8 @@ public sealed class UIBridge : IDisposable
     {
         if (gpu)
         {
-            var detector = new GpuDetectionService();
-            var (provider, _) = detector.Detect();
-            string device = provider switch
+            var cachedOptions = SttRuntimeOptions.RecommendedForThisPc;
+            string device = cachedOptions.Provider switch
             {
                 "cuda" => "cuda",
                 "dml" => "dml",
@@ -454,12 +487,39 @@ public sealed class UIBridge : IDisposable
             }
             return new SttRuntimeOptions(model, device, "float16", 4, 1, 1) { Provider = device };
         }
-        int beam = model is "medium" or "large-v3" or "turbo" ? 2 : 1;
+        int beam = GetRecommendedBeamSize(model);
         return new SttRuntimeOptions(model, "cpu", "int8", 6, 1, beam) { Provider = "cpu" };
+    }
+
+    private static int GetRecommendedBeamSize(string model)
+    {
+        return model.ToLowerInvariant() switch
+        {
+            "tiny" or "base" or "small" => 1,
+            "medium" or "large" or "large-v1" or "large-v2" or "large-v3" or "turbo" => 2,
+            _ => 1
+        };
+    }
+
+    private static void LogError(string message)
+    {
+        try
+        {
+            File.AppendAllText(RuntimePaths.LogPath, $"{message}{Environment.NewLine}");
+        }
+        catch { }
     }
 
     public void Dispose()
     {
-        _webView.CoreWebView2.WebMessageReceived -= OnWebMessage;
+        CancelStreaming();
+        try
+        {
+            if (_webView?.CoreWebView2 is not null)
+            {
+                _webView.CoreWebView2.WebMessageReceived -= OnWebMessage;
+            }
+        }
+        catch { }
     }
 }

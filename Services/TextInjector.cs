@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Input;
@@ -32,7 +33,8 @@ public sealed class TextInjector
             {
                 await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
                 {
-                    try { System.Windows.Clipboard.SetDataObject(previousClipboard); } catch { }
+                    try { System.Windows.Clipboard.SetDataObject(previousClipboard); }
+                    catch (Exception ex) { Debug.WriteLine($"[TextInjector] Clipboard restore failed: {ex.Message}"); }
                 });
             }
         }

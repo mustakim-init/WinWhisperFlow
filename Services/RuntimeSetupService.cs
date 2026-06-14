@@ -154,6 +154,8 @@ public sealed class RuntimeSetupService
         using var process = Process.Start(psi) ?? throw new InvalidOperationException("Could not start setup script.");
         await process.WaitForExitAsync();
 
+        try { File.Delete(batPath); } catch { }
+
         if (process.ExitCode != 0)
         {
             throw new InvalidOperationException(

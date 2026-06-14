@@ -16,6 +16,7 @@ OutputBaseFilename=WinWhisperFlowSetup
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
+SetupIconFile=..\Icon.ico
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 

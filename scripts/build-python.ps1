@@ -14,9 +14,9 @@ if (-not (Test-Path $PyInstaller)) {
 }
 
 Write-Host "Building whisper_worker.exe (CPU)..."
-& $PyInstaller --onefile --distpath ".\stt_engine\dist" --workpath ".\stt_engine\build" ".\stt_engine\whisper_worker.py"
+& $PyInstaller ".\whisper_worker.spec"
 
 Write-Host "Building whisper_worker_gpu.exe (GPU)..."
-& $PyInstaller --onefile --distpath ".\stt_engine\dist" --workpath ".\stt_engine\build" ".\stt_engine\whisper_worker_gpu.py"
+& $PyInstaller ".\whisper_worker_gpu.spec"
 
 Write-Host "Python workers bundled into stt_engine\dist."

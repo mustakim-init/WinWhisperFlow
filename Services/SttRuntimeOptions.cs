@@ -15,12 +15,13 @@ public sealed record SttRuntimeOptions(
     public double NoSpeechThreshold { get; init; } = 0.45;
     public double LogProbThreshold { get; init; } = -0.8;
 
+    private static CachedGpuResult? _gpuCache;
+
     public static SttRuntimeOptions RecommendedForThisPc
     {
         get
         {
-            var gpu = new GpuDetectionService();
-            var (provider, _) = gpu.Detect();
+            var (provider, _) = GetRecommendedGpu();
 
             return provider switch
             {
@@ -30,4 +31,17 @@ public sealed record SttRuntimeOptions(
             };
         }
     }
+
+    private static (string Provider, string? Name) GetRecommendedGpu()
+    {
+        if (_gpuCache is null)
+        {
+            var gpu = new GpuDetectionService();
+            var (provider, name) = gpu.Detect();
+            _gpuCache = new CachedGpuResult(provider, name);
+        }
+        return (_gpuCache.Provider, _gpuCache.Name);
+    }
+
+    private sealed record CachedGpuResult(string Provider, string? Name);
 }

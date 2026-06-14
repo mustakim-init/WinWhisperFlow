@@ -42,7 +42,10 @@ public sealed class TranscriptionHistory
             foreach (var e in entries)
                 Entries.Add(e);
         }
-        catch { }
+        catch (Exception ex)
+        {
+            try { File.AppendAllText(RuntimePaths.LogPath, $"[TranscriptionHistory.Load] {ex.Message}{Environment.NewLine}"); } catch { }
+        }
     }
 
     private void Save()
@@ -51,9 +54,18 @@ public sealed class TranscriptionHistory
         {
             var snapshot = Entries.ToList();
             string json = JsonSerializer.Serialize(snapshot, new JsonSerializerOptions { WriteIndented = true });
-            _ = Task.Run(() => { try { File.WriteAllText(_persistPath, json); } catch { } });
+            Task.Run(() => File.WriteAllText(_persistPath, json)).ContinueWith(t =>
+            {
+                if (t.IsFaulted && t.Exception is not null)
+                {
+                    try { File.AppendAllText(RuntimePaths.LogPath, $"[TranscriptionHistory.Save] {t.Exception.InnerException?.Message ?? t.Exception.Message}{Environment.NewLine}"); } catch { }
+                }
+            }, TaskContinuationOptions.OnlyOnFaulted);
         }
-        catch { }
+        catch (Exception ex)
+        {
+            try { File.AppendAllText(RuntimePaths.LogPath, $"[TranscriptionHistory.Save] {ex.Message}{Environment.NewLine}"); } catch { }
+        }
     }
 
     public static string ActionLabel(string action) => action switch

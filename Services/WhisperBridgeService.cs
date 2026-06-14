@@ -95,11 +95,7 @@ public sealed class WhisperBridgeService : IDisposable
 
     public async Task RestartAsync(SttRuntimeOptions options)
     {
-        if (_loadCts is not null)
-        {
-            _loadCts.Cancel();
-            _loadCts.Dispose();
-        }
+        _loadCts?.Cancel();
         _loadCts = new CancellationTokenSource();
 
         KillWorker();
@@ -324,7 +320,9 @@ public sealed class WhisperBridgeService : IDisposable
             Path.Combine(AppContext.BaseDirectory, ".venv", "Scripts", "python.exe")
         };
 
-        return candidates.FirstOrDefault(File.Exists) ?? "python";
+        return candidates.FirstOrDefault(File.Exists)
+            ?? throw new FileNotFoundException(
+                "Python interpreter not found. Run setup first to create a virtual environment.");
     }
 
     private string ResolveWorkerPath()
@@ -371,7 +369,9 @@ public sealed class WhisperBridgeService : IDisposable
         _loadCts?.Dispose();
         KillWorker();
         _process?.Dispose();
+        try { _gate.Release(); } catch { }
         _gate.Dispose();
+        try { _startGate.Release(); } catch { }
         _startGate.Dispose();
     }
 

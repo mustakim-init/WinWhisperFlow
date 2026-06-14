@@ -149,7 +149,7 @@ export function buildApp(container: HTMLElement): void {
           <div id="qr-container" class="hidden mt-4 flex items-center justify-center p-4 bg-white rounded-xl max-w-[200px] mx-auto">
             <img id="qr-img" src="" alt="QR Code" class="w-full h-auto" />
           </div>
-          <div id="qr-hint" class="hidden text-center text-xs text-on-surface-variant mt-2">Scan with your phone's camera. You may need to bypass the local HTTPS warning.</div>
+          <div id="qr-hint" class="hidden text-center text-xs text-on-surface-variant mt-2">Scan with your phone camera. If it says &quot;Not Private&quot; or &quot;Warning&quot;, tap <strong class="text-primary">Advanced &rarr; Proceed anyway</strong> (Chrome) or <strong class="text-primary">Show Details &rarr; Visit Website</strong> (Safari).</div>
         </div>
 
         <!-- Result Card -->

@@ -34,11 +34,17 @@ public sealed class AudioCaptureService : IDisposable
     {
         lock (_gate)
         {
-            if (WaveInEvent.DeviceCount == 0)
+            if (InputDeviceCount == 0)
             {
                 throw new InvalidOperationException(
                     "No microphone input devices detected. Check Windows Sound settings > Input.");
             }
+
+            if (_deviceId >= InputDeviceCount)
+            {
+                _deviceId = 0;
+            }
+
             Stop();
             _peakLevel = 0;
             LastPeakLevel = 0;
@@ -56,6 +62,11 @@ public sealed class AudioCaptureService : IDisposable
             _waveIn.DataAvailable += OnDataAvailable;
             _waveIn.StartRecording();
         }
+    }
+
+    public static int RefreshInputDeviceCount()
+    {
+        return WaveInEvent.DeviceCount;
     }
 
     public string? Stop()
@@ -87,10 +98,39 @@ public sealed class AudioCaptureService : IDisposable
         lock (_gate)
         {
             if (_writer is null || _currentFile is null) return null;
-            
+
             _writer.Flush();
+
+            var fileInfo = new FileInfo(_currentFile);
+            long fileLength = fileInfo.Length;
+            if (fileLength <= 44) return null;
+
             string snapshotPath = Path.Combine(Path.GetTempPath(), $"winwhisper-snap-{Guid.NewGuid():N}.wav");
             File.Copy(_currentFile, snapshotPath, overwrite: true);
+
+            // WaveFileWriter only finalizes the RIFF/data chunk sizes on Dispose().
+            // Fix the header in the snapshot so parsers see correct sizes.
+            using (var fixStream = new FileStream(snapshotPath, FileMode.Open, FileAccess.ReadWrite))
+            {
+                uint fileSize = (uint)(fixStream.Length - 8);
+                uint dataSize = (uint)(fixStream.Length - 44);
+
+                var sizes = new byte[8];
+                sizes[0] = (byte)fileSize;
+                sizes[1] = (byte)(fileSize >> 8);
+                sizes[2] = (byte)(fileSize >> 16);
+                sizes[3] = (byte)(fileSize >> 24);
+                sizes[4] = (byte)dataSize;
+                sizes[5] = (byte)(dataSize >> 8);
+                sizes[6] = (byte)(dataSize >> 16);
+                sizes[7] = (byte)(dataSize >> 24);
+
+                fixStream.Position = 4;
+                fixStream.Write(sizes, 0, 4);
+                fixStream.Position = 40;
+                fixStream.Write(sizes, 4, 4);
+            }
+
             return snapshotPath;
         }
     }

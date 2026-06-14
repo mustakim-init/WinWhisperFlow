@@ -37,6 +37,8 @@ public sealed class GlobalHotkeyService : IDisposable
         }
     }
 
+    private const int VkCapital = 0x14;
+
     private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
     {
         if (nCode >= 0 && (wParam == WmKeyDown || wParam == WmSysKeyDown))
@@ -45,6 +47,14 @@ public sealed class GlobalHotkeyService : IDisposable
             bool isCtrlAltS = vkCode == KeyInterop.VirtualKeyFromKey(Key.S)
                               && IsKeyDown(0x11)
                               && IsKeyDown(0x12);
+
+            bool isCapsLock = vkCode == VkCapital;
+
+            if (isCapsLock && CanToggle())
+            {
+                ToggleRequested?.Invoke(this, EventArgs.Empty);
+                // Don't suppress Caps Lock - let it toggle normally
+            }
 
             if (isCtrlAltS && CanToggle())
             {

@@ -18,7 +18,6 @@ public partial class OverlayWindow : Window
         InitializeComponent();
         Loaded += (_, _) =>
         {
-            ApplyOsdWindowStyles();
             PositionAboveTaskbar();
         };
     }

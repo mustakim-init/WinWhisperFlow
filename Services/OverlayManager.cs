@@ -1,6 +1,7 @@
 using System;
-using System.Threading;
+using System.Diagnostics;
 using System.Windows;
+using System.Windows.Threading;
 using WinWhisperFlow.Services;
 
 namespace WinWhisperFlow;
@@ -12,41 +13,41 @@ public sealed class OverlayManager : IDisposable
 
     private OverlayWindow? _window;
     private bool _disposed;
-    private readonly SynchronizationContext? _syncContext;
+    private readonly Dispatcher? _dispatcher;
 
     public OverlayManager(AudioCaptureService audio)
     {
         _audio = audio ?? throw new ArgumentNullException(nameof(audio));
-        _syncContext = SynchronizationContext.Current;
+        _dispatcher = Dispatcher.CurrentDispatcher;
 
         _audio.LevelChanged += OnLevelChanged;
     }
 
     public void ShowListening()
     {
-        EnsureWindow();
-        _window!.Dispatcher.Invoke(() => _window.ShowListening());
+        var w = GetOrCreateWindow();
+        if (w is null) return;
+        w.Dispatcher.Invoke(() => w.ShowListening());
     }
 
     public void ShowTranscribing()
     {
-        EnsureWindow();
-        _window!.Dispatcher.Invoke(() => _window.ShowThinking());
+        var w = GetOrCreateWindow();
+        if (w is null) return;
+        w.Dispatcher.Invoke(() => w.ShowThinking());
     }
 
     public void ShowDone(string message)
     {
-        EnsureWindow();
-        _window!.Dispatcher.Invoke(() => _window.ShowDone(message));
+        var w = GetOrCreateWindow();
+        if (w is null) return;
+        w.Dispatcher.Invoke(() => w.ShowDone(message));
     }
 
     public void Hide()
     {
-        OverlayWindow? w = null;
-        lock (_gate)
-        {
-            w = _window;
-        }
+        OverlayWindow? w;
+        lock (_gate) { w = _window; }
 
         if (w is null) return;
         w.Dispatcher.Invoke(() => w.HideOverlay());
@@ -59,11 +60,8 @@ public sealed class OverlayManager : IDisposable
 
         _audio.LevelChanged -= OnLevelChanged;
 
-        OverlayWindow? w = null;
-        lock (_gate)
-        {
-            w = _window;
-        }
+        OverlayWindow? w;
+        lock (_gate) { w = _window; }
 
         try
         {
@@ -72,19 +70,16 @@ public sealed class OverlayManager : IDisposable
                 w.Dispatcher.Invoke(() => w.Close());
             }
         }
-        catch
+        catch (Exception ex)
         {
-            // ignore
+            Debug.WriteLine($"[OverlayManager.Dispose] {ex.Message}");
         }
     }
 
     private void OnLevelChanged(object? sender, float level)
     {
         OverlayWindow? w;
-        lock (_gate)
-        {
-            w = _window;
-        }
+        lock (_gate) { w = _window; }
 
         if (w is null) return;
 
@@ -92,46 +87,42 @@ public sealed class OverlayManager : IDisposable
         {
             w.Dispatcher.BeginInvoke(new Action(() => w.SetAudioLevel(level)));
         }
-        catch
+        catch (Exception ex)
         {
-            // ignore
+            Debug.WriteLine($"[OverlayManager.OnLevelChanged] {ex.Message}");
         }
     }
 
-    private void EnsureWindow()
+    private OverlayWindow? GetOrCreateWindow()
     {
-        if (_disposed) return;
+        if (_disposed) return null;
 
         lock (_gate)
         {
-            if (_window is not null) return;
-
-            // Must be created on UI thread
-            _syncContext?.Post(_ =>
-            {
-                lock (_gate)
-                {
-                    _window ??= new OverlayWindow();
-                }
-            }, null);
-
-            // If no sync context, create synchronously on current dispatcher.
-            if (_syncContext is null)
-            {
-                _window = new OverlayWindow();
-            }
+            if (_window is not null) return _window;
         }
 
-        // If created async via sync context, ensure it's created.
-        if (_window is null)
+        if (_dispatcher is not null && !_dispatcher.CheckAccess())
         {
-            // Best-effort wait without blocking UI thread too much
-            int attempts = 10;
-            while (_window is null && attempts-- > 0)
-            {
-                Thread.Sleep(10);
-            }
-            _window ??= new OverlayWindow();
+            _dispatcher.Invoke(() => CreateWindowOnUiThread());
+        }
+        else
+        {
+            CreateWindowOnUiThread();
+        }
+
+        lock (_gate)
+        {
+            return _window;
+        }
+    }
+
+    private void CreateWindowOnUiThread()
+    {
+        lock (_gate)
+        {
+            if (_window is not null) return;
+            _window = new OverlayWindow();
         }
     }
 }
