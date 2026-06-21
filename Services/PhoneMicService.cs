@@ -1,4 +1,6 @@
-﻿using System.Net;
+using System.Diagnostics;
+using System.IO;
+using System.Net;
 using System.Net.WebSockets;
 using System.Text;
 
@@ -24,16 +26,13 @@ public sealed class PhoneMicService : IDisposable
         Stop();
         Port = port;
 
-        if (!_firewallRuleAttempted)
-        {
-            TryAddFirewallRule();
-            _firewallRuleAttempted = true;
-        }
+        // Localhost binding does not require firewall rules or admin UAC prompts
+        _firewallRuleAttempted = true;
 
         _cts = new CancellationTokenSource();
 
         _listener = new HttpListener();
-        _listener.Prefixes.Add($"http://+:{port}/");
+        _listener.Prefixes.Add($"http://localhost:{port}/");
         _listener.Start();
 
         LogMessage?.Invoke(this, $"Phone mic server started on ws://localhost:{Port}/ (for WinWhisperFlow transcription)");
@@ -110,7 +109,7 @@ public sealed class PhoneMicService : IDisposable
         {
             while (ws.State == WebSocketState.Open)
             {
-                var result = await ws.ReceiveAsync(new ArraySegment<byte>(readBuffer), CancellationToken.None);
+                var result = await ws.ReceiveAsync(new ArraySegment<byte>(readBuffer), _cts?.Token ?? CancellationToken.None);
 
                 if (result.MessageType == WebSocketMessageType.Close)
                 {
@@ -227,8 +226,8 @@ public sealed class PhoneMicService : IDisposable
                 WindowStyle = ProcessWindowStyle.Hidden,
                 CreateNoWindow = true
             };
-            using var proc = System.Diagnostics.Process.Start(psi);
-            proc?.WaitForExit(5000);
+            using var fwProc = System.Diagnostics.Process.Start(psi);
+            if (fwProc is not null) fwProc.WaitForExit(5000);
             _firewallRuleAdded = true;
         }
         catch { }

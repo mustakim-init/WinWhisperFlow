@@ -180,7 +180,11 @@ class WhisperModel:
         self.n_text_state = int(meta["n_text_state"])
         self.n_mels = int(meta["n_mels"])
         encoder_input_shape = self.encoder.get_inputs()[0].shape
-        self.expected_mel_frames = encoder_input_shape[2] if len(encoder_input_shape) >= 3 and encoder_input_shape[2] is not None else 3000
+        mel_frames_val = encoder_input_shape[2] if len(encoder_input_shape) >= 3 else None
+        try:
+            self.expected_mel_frames = int(mel_frames_val)
+        except (ValueError, TypeError):
+            self.expected_mel_frames = 3000
         self.sot_id = int(meta["sot"])
         self.eot_id = int(meta["eot"])
         self.translate_id = int(meta["translate"])
@@ -236,10 +240,7 @@ class WhisperModel:
         logits[self.sot_id] = float("-inf")
         logits[self.translate_id] = float("-inf")
 
-    def transcribe(self, audio_path, language="en", no_speech_threshold=0.72, log_prob_threshold=-0.8):
-        audio, sr = load_audio(audio_path)
-        mel = compute_features(audio, sr, self.n_mels, self.expected_mel_frames)
-
+    def _transcribe_segment(self, mel, language, no_speech_threshold, log_prob_threshold):
         cross_k, cross_v = self.run_encoder(mel)
 
         sot_sequence = list(self.sot_sequence)
@@ -261,7 +262,7 @@ class WhisperModel:
         if next_token == self.no_speech_id:
             no_speech_prob = float(np.exp(logits_vec[self.no_speech_id]) / np.sum(np.exp(logits_vec)))
             if no_speech_prob > no_speech_threshold:
-                return ""
+                return "", True
             logits_vec[self.no_speech_id] = float("-inf")
             next_token = int(logits_vec.argmax())
 
@@ -290,7 +291,59 @@ class WhisperModel:
                     pass
 
         text = raw.decode("utf-8", errors="replace").strip()
-        return text
+        return text, False
+
+    def transcribe(self, audio_path, language="en", no_speech_threshold=0.72, log_prob_threshold=-0.8):
+        audio, sr = load_audio(audio_path)
+
+        frames = librosa.frames_to_time(
+            np.arange(self.expected_mel_frames + self.expected_mel_frames // 2),
+            sr=SAMPLE_RATE, hop_length=HOP_LENGTH, n_fft=N_FFT
+        )
+
+        spec = librosa.stft(
+            audio, n_fft=N_FFT, hop_length=HOP_LENGTH,
+            win_length=N_FFT, window="hann", center=True,
+            pad_mode="reflect"
+        )
+        power = np.abs(spec) ** 2
+
+        mel_basis = librosa.filters.mel(
+            sr=SAMPLE_RATE, n_fft=N_FFT, n_mels=self.n_mels,
+            fmin=0, fmax=SAMPLE_RATE / 2,
+            htk=True, norm="slaney"
+        )
+        mel = mel_basis @ power
+
+        log_spec = np.log10(np.clip(mel, a_min=1e-10, a_max=None))
+        log_spec = np.maximum(log_spec, log_spec.max(axis=0, keepdims=True) - 8.0)
+        mel_norm = (log_spec + 4.0) / 4.0
+
+        T = mel_norm.shape[1]
+        if T <= self.expected_mel_frames:
+            mel_input = np.zeros((self.n_mels, self.expected_mel_frames), dtype=np.float32)
+            mel_input[:, :T] = mel_norm[:, :T]
+            text, _ = self._transcribe_segment(
+                mel_input[np.newaxis, :, :].astype(np.float32),
+                language, no_speech_threshold, log_prob_threshold
+            )
+            return text
+
+        hop = self.expected_mel_frames // 2
+        texts = []
+        for start in range(0, T, hop):
+            end = min(start + self.expected_mel_frames, T)
+            mel_chunk = np.zeros((self.n_mels, self.expected_mel_frames), dtype=np.float32)
+            chunk_len = end - start
+            mel_chunk[:, :chunk_len] = mel_norm[:, start:end]
+            text, is_silent = self._transcribe_segment(
+                mel_chunk[np.newaxis, :, :].astype(np.float32),
+                language, no_speech_threshold, log_prob_threshold
+            )
+            if text and not is_silent:
+                texts.append(text)
+
+        return " ".join(texts)
 
 
 def main():

@@ -8,7 +8,6 @@ public sealed record SttRuntimeOptions(
     int NumWorkers,
     int BeamSize)
 {
-    /// <summary>"cuda", "dml", or "cpu"</summary>
     public string Provider { get; init; } = "cpu";
     public bool VadFilter { get; init; } = false;
     public int VadMinSilenceDurationMs { get; init; } = 300;
@@ -30,6 +29,28 @@ public sealed record SttRuntimeOptions(
                 _ => new("small", "cpu", "int8", 6, 1, 1) { Provider = "cpu" }
             };
         }
+    }
+
+    public static string GetRecommendedCompositeName()
+    {
+        var opts = RecommendedForThisPc;
+        return $"{opts.Model}-{opts.Provider}";
+    }
+
+    public static (string Model, string Device) FromCompositeName(string composite)
+    {
+        int lastHyphen = composite.LastIndexOf('-');
+        if (lastHyphen < 0)
+            return (composite, "cpu");
+
+        string provider = composite[(lastHyphen + 1)..];
+        string model = composite[..lastHyphen];
+
+        string[] validProviders = { "cpu", "cuda", "dml" };
+        if (!validProviders.Contains(provider))
+            return (composite, "cpu");
+
+        return (model, provider);
     }
 
     private static (string Provider, string? Name) GetRecommendedGpu()

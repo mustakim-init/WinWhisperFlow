@@ -1,18 +1,43 @@
 using System.IO;
+using System.Text;
 using NAudio.Wave;
 
 namespace WinWhisperFlow.Services;
 
 public sealed class AudioCaptureService : IDisposable
 {
+    private const int SpectrumFftSize = 512;
+    private const int SpectrumBands = 5;
+    private static readonly (int Low, int High)[] SpectrumBandRanges = [
+        (2, 7),     //   62-218 Hz   (low)
+        (8, 15),    //  250-468 Hz   (low-mid)
+        (16, 31),   //  500-968 Hz   (mid)
+        (32, 95),   // 1000-2968 Hz  (upper-mid)
+        (96, 255),  // 3000-7968 Hz  (high)
+    ];
+    private static readonly float[] HannWindow = PrecomputeHann();
+
+    private static float[] PrecomputeHann()
+    {
+        var w = new float[SpectrumFftSize];
+        for (int i = 0; i < SpectrumFftSize; i++)
+            w[i] = 0.5f * (1 - MathF.Cos(2 * MathF.PI * i / (SpectrumFftSize - 1)));
+        return w;
+    }
+
     private readonly object _gate = new();
     private WaveInEvent? _waveIn;
     private WaveFileWriter? _writer;
     private string? _currentFile;
     private float _peakLevel;
     private int _deviceId;
+    private readonly List<byte> _pcmBuffer = new(65536);
+    private readonly short[] _spectrumRing = new short[SpectrumFftSize];
+    private int _spectrumPos;
+    private int _spectrumCounter;
 
     public event EventHandler<float>? LevelChanged;
+    public event EventHandler<float[]>? SpectrumChanged;
     public float LastPeakLevel { get; private set; }
     public int DeviceId { get => _deviceId; set => _deviceId = Math.Clamp(value, 0, WaveInEvent.DeviceCount - 1); }
     public bool IsListening => _waveIn is not null;
@@ -48,6 +73,7 @@ public sealed class AudioCaptureService : IDisposable
             Stop();
             _peakLevel = 0;
             LastPeakLevel = 0;
+            _pcmBuffer.Clear();
             _currentFile = Path.Combine(Path.GetTempPath(), $"winwhisper-{Guid.NewGuid():N}.wav");
             var format = new WaveFormat(16000, 16, 1);
 
@@ -73,10 +99,7 @@ public sealed class AudioCaptureService : IDisposable
     {
         lock (_gate)
         {
-            if (_waveIn is null)
-            {
-                return null;
-            }
+            if (_waveIn is null) return null;
 
             _waveIn.DataAvailable -= OnDataAvailable;
             _waveIn.StopRecording();
@@ -95,53 +118,43 @@ public sealed class AudioCaptureService : IDisposable
 
     public string? GetTemporarySnapshot()
     {
+        byte[] copy;
         lock (_gate)
         {
-            if (_writer is null || _currentFile is null) return null;
-
-            _writer.Flush();
-
-            var fileInfo = new FileInfo(_currentFile);
-            long fileLength = fileInfo.Length;
-            if (fileLength <= 44) return null;
-
-            string snapshotPath = Path.Combine(Path.GetTempPath(), $"winwhisper-snap-{Guid.NewGuid():N}.wav");
-            File.Copy(_currentFile, snapshotPath, overwrite: true);
-
-            // WaveFileWriter only finalizes the RIFF/data chunk sizes on Dispose().
-            // Fix the header in the snapshot so parsers see correct sizes.
-            using (var fixStream = new FileStream(snapshotPath, FileMode.Open, FileAccess.ReadWrite))
-            {
-                uint fileSize = (uint)(fixStream.Length - 8);
-                uint dataSize = (uint)(fixStream.Length - 44);
-
-                var sizes = new byte[8];
-                sizes[0] = (byte)fileSize;
-                sizes[1] = (byte)(fileSize >> 8);
-                sizes[2] = (byte)(fileSize >> 16);
-                sizes[3] = (byte)(fileSize >> 24);
-                sizes[4] = (byte)dataSize;
-                sizes[5] = (byte)(dataSize >> 8);
-                sizes[6] = (byte)(dataSize >> 16);
-                sizes[7] = (byte)(dataSize >> 24);
-
-                fixStream.Position = 4;
-                fixStream.Write(sizes, 0, 4);
-                fixStream.Position = 40;
-                fixStream.Write(sizes, 4, 4);
-            }
-
-            return snapshotPath;
+            if (_pcmBuffer.Count == 0) return null;
+            copy = _pcmBuffer.ToArray();
         }
+
+        string snapshotPath = Path.Combine(Path.GetTempPath(), $"winwhisper-snap-{Guid.NewGuid():N}.wav");
+        WriteWavFile(snapshotPath, copy, 16000);
+        return snapshotPath;
+    }
+
+    private static void WriteWavFile(string path, byte[] pcmData, int sampleRate)
+    {
+        int dataSize = pcmData.Length;
+        using var fs = new FileStream(path, FileMode.Create, FileAccess.Write);
+        using var bw = new BinaryWriter(fs);
+        bw.Write(Encoding.ASCII.GetBytes("RIFF"));
+        bw.Write(36 + dataSize);
+        bw.Write(Encoding.ASCII.GetBytes("WAVE"));
+        bw.Write(Encoding.ASCII.GetBytes("fmt "));
+        bw.Write(16);
+        bw.Write((short)1);
+        bw.Write((short)1);
+        bw.Write(sampleRate);
+        bw.Write(sampleRate * 2);
+        bw.Write((short)2);
+        bw.Write((short)16);
+        bw.Write(Encoding.ASCII.GetBytes("data"));
+        bw.Write(dataSize);
+        bw.Write(pcmData);
     }
 
     public void Cancel()
     {
         string? file = Stop();
-        if (file is not null)
-        {
-            try { File.Delete(file); } catch { }
-        }
+        if (file is not null) { try { File.Delete(file); } catch { } }
     }
 
     private void OnDataAvailable(object? sender, WaveInEventArgs e)
@@ -152,21 +165,105 @@ public sealed class AudioCaptureService : IDisposable
         lock (_gate)
         {
             _writer?.Write(e.Buffer, 0, e.BytesRecorded);
+            _pcmBuffer.AddRange(new ArraySegment<byte>(e.Buffer, 0, e.BytesRecorded));
         }
 
         LevelChanged?.Invoke(this, level);
+
+        int sampleCount = e.BytesRecorded / 2;
+        for (int i = 0; i < sampleCount; i++)
+        {
+            _spectrumRing[_spectrumPos] = BitConverter.ToInt16(e.Buffer, i * 2);
+            _spectrumPos = (_spectrumPos + 1) % SpectrumFftSize;
+        }
+
+        _spectrumCounter++;
+        if (_spectrumCounter >= 2)
+        {
+            _spectrumCounter = 0;
+            var bands = ComputeSpectrumBands();
+            SpectrumChanged?.Invoke(this, bands);
+        }
+    }
+
+    private float[] ComputeSpectrumBands()
+    {
+        var real = new float[SpectrumFftSize];
+        var imag = new float[SpectrumFftSize];
+
+        int pos = _spectrumPos;
+        for (int i = 0; i < SpectrumFftSize; i++)
+        {
+            real[i] = _spectrumRing[pos] / 32768f * HannWindow[i];
+            pos = (pos + 1) % SpectrumFftSize;
+        }
+
+        FftInPlace(real, imag);
+
+        var mag = new float[SpectrumFftSize / 2];
+        for (int i = 0; i < SpectrumFftSize / 2; i++)
+            mag[i] = MathF.Sqrt(real[i] * real[i] + imag[i] * imag[i]);
+
+        var bands = new float[SpectrumBands];
+        for (int b = 0; b < SpectrumBands; b++)
+        {
+            var (low, high) = SpectrumBandRanges[b];
+            float sum = 0;
+            for (int i = low; i <= high && i < mag.Length; i++)
+                sum += mag[i];
+            float count = Math.Min(high, mag.Length - 1) - low + 1;
+            bands[b] = count > 0 ? MathF.Min(sum / count * 3f, 1f) : 0;
+        }
+
+        return bands;
+    }
+
+    private static void FftInPlace(float[] real, float[] imag)
+    {
+        int n = real.Length;
+        for (int i = 1, j = 0; i < n; i++)
+        {
+            int bit = n >> 1;
+            while ((j & bit) != 0) { j ^= bit; bit >>= 1; }
+            j ^= bit;
+            if (i < j)
+            {
+                (real[j], real[i]) = (real[i], real[j]);
+                (imag[j], imag[i]) = (imag[i], imag[j]);
+            }
+        }
+
+        for (int len = 2; len <= n; len <<= 1)
+        {
+            float ang = 2 * MathF.PI / len;
+            float wRe = MathF.Cos(ang);
+            float wIm = -MathF.Sin(ang);
+            for (int i = 0; i < n; i += len)
+            {
+                float curRe = 1, curIm = 0;
+                for (int j = 0; j < len / 2; j++)
+                {
+                    int u = i + j, v = i + j + len / 2;
+                    float tRe = curRe * real[v] - curIm * imag[v];
+                    float tIm = curRe * imag[v] + curIm * real[v];
+                    real[v] = real[u] - tRe;
+                    imag[v] = imag[u] - tIm;
+                    real[u] += tRe;
+                    imag[u] += tIm;
+                    (curRe, curIm) = (curRe * wRe - curIm * wIm, curRe * wIm + curIm * wRe);
+                }
+            }
+        }
     }
 
     private static float CalculateRmsLevel(byte[] buffer, int bytesRecorded)
     {
-        if (bytesRecorded == 0)
-        {
-            return 0;
-        }
+        if (bytesRecorded == 0) return 0;
 
         double sumSquares = 0;
-        int sampleCount = bytesRecorded / 2;
-        for (int offset = 0; offset < bytesRecorded - 1; offset += 2)
+        int bytesPerSample = 2;
+        int sampleCount = bytesRecorded / bytesPerSample;
+        for (int offset = 0; offset < bytesRecorded - bytesPerSample + 1; offset += bytesPerSample)
         {
             short sample = BitConverter.ToInt16(buffer, offset);
             double normalized = sample / 32768.0;
@@ -179,6 +276,7 @@ public sealed class AudioCaptureService : IDisposable
 
     public void Dispose()
     {
-        Stop();
+        string? file = Stop();
+        if (file is not null) { try { File.Delete(file); } catch { } }
     }
 }

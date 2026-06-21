@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Windows;
 using System.Windows.Threading;
+using Microsoft.Web.WebView2.Core;
 using WinWhisperFlow.Services;
 
 namespace WinWhisperFlow;
@@ -9,18 +10,23 @@ namespace WinWhisperFlow;
 public sealed class OverlayManager : IDisposable
 {
     private readonly AudioCaptureService _audio;
+    private readonly CoreWebView2 _mainWebView;
+    private readonly string _overlayDir;
     private readonly object _gate = new();
 
     private OverlayWindow? _window;
     private bool _disposed;
     private readonly Dispatcher? _dispatcher;
 
-    public OverlayManager(AudioCaptureService audio)
+    public OverlayManager(AudioCaptureService audio, CoreWebView2 mainWebView, string overlayDir)
     {
         _audio = audio ?? throw new ArgumentNullException(nameof(audio));
-        _dispatcher = Dispatcher.CurrentDispatcher;
+        _mainWebView = mainWebView;
+        _overlayDir = overlayDir;
+        _dispatcher = System.Windows.Application.Current?.Dispatcher ?? Dispatcher.CurrentDispatcher;
 
         _audio.LevelChanged += OnLevelChanged;
+        _audio.SpectrumChanged += OnSpectrumChanged;
     }
 
     public void ShowListening()
@@ -44,11 +50,18 @@ public sealed class OverlayManager : IDisposable
         w.Dispatcher.Invoke(() => w.ShowDone(message));
     }
 
+    public void ShowError(string message)
+    {
+        var w = GetOrCreateWindow();
+        if (w is null) return;
+        w.Dispatcher.Invoke(() => w.ShowError(message));
+    }
+
     public void Hide()
     {
+        if (_disposed) return;
         OverlayWindow? w;
         lock (_gate) { w = _window; }
-
         if (w is null) return;
         w.Dispatcher.Invoke(() => w.HideOverlay());
     }
@@ -59,62 +72,49 @@ public sealed class OverlayManager : IDisposable
         _disposed = true;
 
         _audio.LevelChanged -= OnLevelChanged;
+        _audio.SpectrumChanged -= OnSpectrumChanged;
 
         OverlayWindow? w;
         lock (_gate) { w = _window; }
-
         try
         {
-            if (w is not null)
-            {
-                w.Dispatcher.Invoke(() => w.Close());
-            }
+            if (w is not null) w.Dispatcher.Invoke(() => w.Close());
         }
-        catch (Exception ex)
-        {
-            Debug.WriteLine($"[OverlayManager.Dispose] {ex.Message}");
-        }
+        catch (Exception ex) { Debug.WriteLine($"[OverlayManager.Dispose] {ex.Message}"); }
     }
 
     private void OnLevelChanged(object? sender, float level)
     {
         OverlayWindow? w;
         lock (_gate) { w = _window; }
-
         if (w is null) return;
 
-        try
-        {
-            w.Dispatcher.BeginInvoke(new Action(() => w.SetAudioLevel(level)));
-        }
-        catch (Exception ex)
-        {
-            Debug.WriteLine($"[OverlayManager.OnLevelChanged] {ex.Message}");
-        }
+        try { w.Dispatcher.BeginInvoke(() => w.SetAudioLevel(level)); }
+        catch (Exception ex) { Debug.WriteLine($"[OverlayManager.OnLevelChanged] {ex.Message}"); }
+    }
+
+    private void OnSpectrumChanged(object? sender, float[] bands)
+    {
+        OverlayWindow? w;
+        lock (_gate) { w = _window; }
+        if (w is null) return;
+
+        try { w.Dispatcher.BeginInvoke(() => w.SetSpectrum(bands)); }
+        catch (Exception ex) { Debug.WriteLine($"[OverlayManager.OnSpectrumChanged] {ex.Message}"); }
     }
 
     private OverlayWindow? GetOrCreateWindow()
     {
         if (_disposed) return null;
 
-        lock (_gate)
-        {
-            if (_window is not null) return _window;
-        }
+        lock (_gate) { if (_window is not null) return _window; }
 
         if (_dispatcher is not null && !_dispatcher.CheckAccess())
-        {
             _dispatcher.Invoke(() => CreateWindowOnUiThread());
-        }
         else
-        {
             CreateWindowOnUiThread();
-        }
 
-        lock (_gate)
-        {
-            return _window;
-        }
+        lock (_gate) { return _window; }
     }
 
     private void CreateWindowOnUiThread()

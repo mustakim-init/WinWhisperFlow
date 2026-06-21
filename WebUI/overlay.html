@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Overlay</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: transparent;
+      font-family: 'Inter', system-ui, sans-serif;
+      overflow: hidden;
+      width: 100vw;
+      height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #pill {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 8px 20px;
+      border-radius: 100px;
+      background: rgba(15, 15, 15, 0.85);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      transition: opacity 0.2s ease, transform 0.2s ease;
+      opacity: 0;
+      transform: translateY(10px) scale(0.95);
+      pointer-events: none;
+    }
+    #pill.visible {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+      pointer-events: auto;
+    }
+    #pill.error {
+      border-color: rgba(255, 80, 80, 0.4);
+      background: rgba(60, 10, 10, 0.85);
+    }
+    .bars {
+      display: flex;
+      align-items: center;
+      gap: 3px;
+      height: 24px;
+    }
+    .bar {
+      width: 3px;
+      border-radius: 2px;
+      background: #d4a74c;
+      transition: height 0.08s ease;
+    }
+    .checkmark {
+      width: 24px; height: 24px;
+      border-radius: 50%;
+      background: rgba(52, 211, 153, 0.2);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 14px; color: #34d399;
+      flex-shrink: 0;
+    }
+    #text {
+      color: #ededed;
+      font-size: 13px;
+      font-weight: 500;
+      white-space: nowrap;
+    }
+    #timer {
+      color: #999;
+      font-size: 12px;
+      font-weight: 400;
+      font-variant-numeric: tabular-nums;
+    }
+  </style>
+</head>
+<body>
+  <div id="pill">
+    <div class="bars" id="bars">
+      <div class="bar" id="b0"></div>
+      <div class="bar" id="b1"></div>
+      <div class="bar" id="b2"></div>
+      <div class="bar" id="b3"></div>
+      <div class="bar" id="b4"></div>
+    </div>
+    <div class="checkmark" id="checkmark" style="display:none">&#10003;</div>
+    <span id="text">Listening</span>
+    <span id="timer">0:00</span>
+  </div>
+
+  <script>
+    const pill = document.getElementById('pill');
+    const bars = Array.from({length:5}, (_, i) => document.getElementById('b'+i));
+    const text = document.getElementById('text');
+    const timer = document.getElementById('timer');
+    const checkmark = document.getElementById('checkmark');
+    const barsContainer = document.getElementById('bars');
+
+    let seconds = 0;
+    let timerInterval = null;
+
+    function setState(state, msg) {
+      switch (state) {
+        case 'hidden':
+          pill.classList.remove('visible', 'error');
+          clearTimer();
+          break;
+        case 'listening':
+          pill.classList.add('visible');
+          pill.classList.remove('error');
+          text.textContent = msg || 'Listening';
+          barsContainer.style.display = 'flex';
+          checkmark.style.display = 'none';
+          startTimer();
+          break;
+        case 'transcribing':
+          pill.classList.add('visible');
+          pill.classList.remove('error');
+          text.textContent = msg || 'Transcribing\u2026';
+          barsContainer.style.display = 'flex';
+          checkmark.style.display = 'none';
+          clearTimer();
+          break;
+        case 'done':
+          pill.classList.add('visible');
+          pill.classList.remove('error');
+          text.textContent = msg || 'Done';
+          barsContainer.style.display = 'none';
+          checkmark.style.display = 'flex';
+          clearTimer();
+          setTimeout(() => { pill.classList.remove('visible'); }, 1500);
+          break;
+        case 'error':
+          pill.classList.add('visible', 'error');
+          text.textContent = msg || 'Error';
+          barsContainer.style.display = 'none';
+          checkmark.style.display = 'none';
+          clearTimer();
+          break;
+      }
+    }
+
+    function setSpectrum(bands) {
+      bars.forEach((b, i) => {
+        const val = i < bands.length ? bands[i] : 0;
+        b.style.height = Math.round(4 + val * 20) + 'px';
+      });
+    }
+
+    function startTimer() {
+      seconds = 0;
+      timer.textContent = '0:00';
+      clearInterval(timerInterval);
+      timerInterval = setInterval(() => {
+        seconds++;
+        const m = Math.floor(seconds / 60);
+        const s = seconds % 60;
+        timer.textContent = m + ':' + s.toString().padStart(2, '0');
+      }, 1000);
+    }
+
+    function clearTimer() {
+      clearInterval(timerInterval);
+      timerInterval = null;
+      timer.textContent = '';
+    }
+
+    const handleMsg = (e) => {
+      try {
+        const data = typeof e.data === 'string' ? JSON.parse(e.data) : e.data;
+        if (data.type === 'overlay_state') setState(data.state, data.text);
+        if (data.type === 'spectrum') setSpectrum(data.bands);
+      } catch {}
+    };
+
+    if (window.chrome && window.chrome.webview) {
+      window.chrome.webview.addEventListener('message', handleMsg);
+    } else {
+      window.addEventListener('message', handleMsg);
+    }
+  </script>
+</body>
+</html>

@@ -2,30 +2,31 @@ namespace WinWhisperFlow.Services;
 
 public static class ModelNotes
 {
-    public static string GetModelNote(string model, bool gpu)
+    public static string GetModelNote(string model, string provider)
     {
-        if (gpu)
+        bool isGpu = provider is "cuda" or "dml";
+        string providerLabel = provider switch
         {
-            return model switch
-            {
-                "tiny" => "GPU: Fastest, minimal quality.",
-                "base" => "GPU: Fast and decent quality.",
-                "small" => "GPU: Recommended balance.",
-                "medium" => "GPU: Higher accuracy.",
-                "large-v3" => "GPU: Maximum accuracy.",
-                "turbo" => "GPU: Fast + accurate.",
-                _ => "GPU mode."
-            };
-        }
-        return model switch
+            "cuda" => "CUDA",
+            "dml" => "DirectML",
+            _ => "CPU"
+        };
+
+        return (model, isGpu) switch
         {
-            "tiny" => "CPU: Fastest but least accurate.",
-            "base" => "CPU: Fast, decent for English.",
-            "small" => "CPU: Recommended balance.",
-            "medium" => "CPU: Slower but more accurate.",
-            "large-v3" => "CPU: May be too slow. Enable GPU.",
-            "turbo" => "CPU: Heavy. Enable GPU.",
-            _ => "CPU mode."
+            ("tiny", true) => $"{providerLabel}: Fastest, minimal quality.",
+            ("tiny", false) => $"{providerLabel}: Fastest but least accurate.",
+            ("base", true) => $"{providerLabel}: Fast and decent quality.",
+            ("base", false) => $"{providerLabel}: Fast, decent for English.",
+            ("small", true) => $"{providerLabel}: Recommended balance.",
+            ("small", false) => $"{providerLabel}: Recommended balance.",
+            ("medium", true) => $"{providerLabel}: Higher accuracy.",
+            ("medium", false) => $"{providerLabel}: Slower but more accurate.",
+            ("large-v3", true) => $"{providerLabel}: Maximum accuracy.",
+            ("large-v3", false) => $"{providerLabel}: May be too slow on CPU.",
+            ("turbo", true) => $"{providerLabel}: Fast + accurate.",
+            ("turbo", false) => $"{providerLabel}: Heavy on CPU. Use GPU.",
+            _ => $"{providerLabel} mode."
         };
     }
 }

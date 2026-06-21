@@ -28,9 +28,29 @@ Thumbs.db
 # Logs
 *.log
 
+# Build artifacts
+build/
+
+# Downloaded models
+models/
+
+# Python build outputs
+stt_engine/build/
+
 # Separate git repos — tracked independently
 whispermicrelay/
 PhoneMicVirtualCable/
 
 # material-web is cloned for reference only
 material-web/
+
+# Agent workflow — AI context, handoffs, design docs, skills
+.agents/
+
+# Reference projects — cloned open-source repos for UI/arch inspiration
+.inspiration/
+
+# AI agent config files — project-specific, not for repo
+AGENTS.md
+CLAUDE.md
+GEMINI.md

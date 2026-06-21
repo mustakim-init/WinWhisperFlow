@@ -1,0 +1,154 @@
+import { useEffect } from 'react';
+import { onMessage, send } from '../bridge/ipc';
+import type { S2CMessage } from '../types/messages';
+import {
+  setDevice, setGpuName, setAudioDevices, setModel, setIsListening, setIsReady, setModelLoaded as storeSetModelLoaded,
+  setModelNote, setAudioLevel, setLastTranscript, setStatus, addHistory, addLog,
+  setPhoneMicRunning, setPhoneMicUrl, setSetupSteps, setSetupOverall, setSetupError,
+  setLanguage, setModelLoading, setAvailableModels, setPartialTranscript,
+} from '../lib/store';
+import { useUiStore } from '../stores/uiStore';
+import { useDownloadStore } from '../stores/downloadStore';
+import { useToastStore } from '../stores/toastStore';
+
+export function useGlobalBridgeSync() {
+  useEffect(() => {
+    send({ type: 'bridge_ready' });
+
+    const unsubMsg = onMessage((msg: S2CMessage) => {
+      switch (msg.type) {
+        case 'init':
+          setSetupError(undefined);
+          setModelLoading(false);
+          if (msg.device) setDevice(msg.device);
+          if (msg.model) setModel(msg.model);
+          if (msg.gpuName) setGpuName(msg.gpuName);
+          if (msg.audioDevices) setAudioDevices(msg.audioDevices);
+          useUiStore.getState().setIsReady(msg.ready);
+          setIsReady(msg.ready);
+          if (msg.ready && msg.error) {
+            setStatus(msg.error, 'error');
+            useUiStore.getState().setStatus(msg.error, 'error');
+            useToastStore.getState().addToast({ title: 'Model not loaded', message: msg.error, variant: 'error' });
+          } else if (!msg.ready && msg.error) {
+            setSetupError(msg.error);
+          }
+          break;
+
+        case 'settings': {
+          const s = msg.settings;
+          if (typeof s.language === 'string') setLanguage(s.language);
+          break;
+        }
+
+        case 'status_update':
+          setStatus(msg.text, msg.variant);
+          useUiStore.getState().setStatus(msg.text, msg.variant);
+          if (msg.text.includes('Loading model')) setModelLoading(true);
+          if (msg.variant === 'success' || msg.variant === 'error') setModelLoading(false);
+          break;
+
+        case 'model_download_progress':
+          useDownloadStore.getState().setProgress(
+            msg.compositeName ?? msg.model,
+            msg.downloaded,
+            msg.total,
+            msg.status,
+            msg.error,
+            msg.speed,
+          );
+          if (msg.status === 'done') {
+            useToastStore.getState().addToast({
+              title: `Model downloaded`,
+              message: msg.compositeName ?? msg.model,
+              variant: 'success',
+            });
+          } else if (msg.status === 'error') {
+            useToastStore.getState().addToast({
+              title: `Download failed`,
+              message: msg.error ?? 'Unknown error',
+              variant: 'error',
+            });
+          }
+          break;
+
+        case 'model_loaded':
+          setModel(msg.model);
+          storeSetModelLoaded(true);
+          if (msg.device) setDevice(msg.device);
+          if (msg.note) setModelNote(msg.note);
+          useToastStore.getState().addToast({
+            title: `Model loaded`,
+            message: `${msg.model} on ${msg.device}`,
+            variant: 'success',
+          });
+          break;
+
+        case 'model_note':
+          setModelNote(msg.note);
+          break;
+
+        case 'listening_status':
+          setIsListening(msg.listening);
+          if (msg.listening) setPartialTranscript('', '');
+          break;
+
+        case 'audio_level':
+          setAudioLevel(msg.level);
+          break;
+
+        case 'transcription_result':
+          if (msg.isPartial) {
+            setPartialTranscript(msg.text, msg.meta);
+          } else {
+            setLastTranscript(msg.text, msg.meta);
+          }
+          break;
+
+        case 'history_entry':
+          addHistory(msg.entry);
+          break;
+
+        case 'log':
+          addLog(msg.message);
+          break;
+
+        case 'phone_mic_status':
+          setPhoneMicRunning(msg.running);
+          break;
+
+        case 'phone_mic_url':
+          setPhoneMicUrl(msg.url);
+          break;
+
+        case 'setup_progress':
+          setSetupSteps(msg.steps);
+          setSetupOverall(msg.overall);
+          useUiStore.getState().setSetupSteps(msg.steps);
+          if (msg.steps.every((s) => s.status === 'done')) {
+            setSetupError(undefined);
+          }
+          const errStep = msg.steps.find((s) => s.status === 'error');
+          if (errStep) {
+            setSetupError(errStep.error || 'Setup failed');
+          }
+          break;
+
+        case 'models_status':
+          setAvailableModels(msg.models);
+          break;
+
+        case 'notification':
+          addLog(`[${msg.variant}] ${msg.title}: ${msg.message}`);
+          useToastStore.getState().addToast({
+            title: msg.title,
+            message: msg.message,
+            variant: msg.variant,
+          });
+          break;
+      }
+    });
+
+    return () => { unsubMsg(); };
+  }, []);
+}

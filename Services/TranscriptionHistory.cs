@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
 using System.IO;
 using System.Text.Json;
@@ -7,7 +8,10 @@ namespace WinWhisperFlow.Services;
 public sealed class TranscriptionHistory
 {
     private const int MaxEntries = 100;
+    private const int DebounceMs = 500;
     private readonly string _persistPath;
+    private readonly ConcurrentQueue<TranscriptionHistoryEntry> _pending = new();
+    private CancellationTokenSource? _debounceCts;
 
     public ObservableCollection<TranscriptionHistoryEntry> Entries { get; } = new();
 
@@ -19,16 +23,53 @@ public sealed class TranscriptionHistory
 
     public void Add(TranscriptionHistoryEntry entry)
     {
-        Entries.Insert(0, entry);
-        while (Entries.Count > MaxEntries)
-            Entries.RemoveAt(Entries.Count - 1);
-        Save();
+        System.Windows.Application.Current?.Dispatcher.Invoke(() =>
+        {
+            Entries.Insert(0, entry);
+            while (Entries.Count > MaxEntries)
+                Entries.RemoveAt(Entries.Count - 1);
+        });
+        DebouncedSave();
+    }
+
+    public bool Remove(string timestampIso, string text)
+    {
+        bool found = false;
+        System.Windows.Application.Current?.Dispatcher.Invoke(() =>
+        {
+            var match = Entries.FirstOrDefault(e =>
+                e.Timestamp.ToString("O") == timestampIso && e.Text == text);
+            if (match is not null)
+            {
+                Entries.Remove(match);
+                found = true;
+            }
+        });
+        if (found) SaveNow();
+        return found;
     }
 
     public void Clear()
     {
-        Entries.Clear();
-        Save();
+        System.Windows.Application.Current?.Dispatcher.Invoke(() =>
+        {
+            Entries.Clear();
+        });
+        SaveNow();
+    }
+
+    private void DebouncedSave()
+    {
+        _debounceCts?.Cancel();
+        _debounceCts?.Dispose();
+        _debounceCts = new CancellationTokenSource();
+        var token = _debounceCts.Token;
+        _ = Task.Run(async () =>
+        {
+            try { await Task.Delay(DebounceMs, token); } catch { return; }
+            if (!token.IsCancellationRequested)
+                SaveNow();
+        });
     }
 
     private void Load()
@@ -48,19 +89,19 @@ public sealed class TranscriptionHistory
         }
     }
 
-    private void Save()
+    private void SaveNow()
     {
         try
         {
-            var snapshot = Entries.ToList();
-            string json = JsonSerializer.Serialize(snapshot, new JsonSerializerOptions { WriteIndented = true });
-            Task.Run(() => File.WriteAllText(_persistPath, json)).ContinueWith(t =>
+            List<TranscriptionHistoryEntry>? snapshot = null;
+            System.Windows.Application.Current?.Dispatcher.Invoke(() =>
             {
-                if (t.IsFaulted && t.Exception is not null)
-                {
-                    try { File.AppendAllText(RuntimePaths.LogPath, $"[TranscriptionHistory.Save] {t.Exception.InnerException?.Message ?? t.Exception.Message}{Environment.NewLine}"); } catch { }
-                }
-            }, TaskContinuationOptions.OnlyOnFaulted);
+                snapshot = Entries.ToList();
+            });
+            if (snapshot is null) return;
+
+            string json = JsonSerializer.Serialize(snapshot, new JsonSerializerOptions { WriteIndented = true });
+            File.WriteAllText(_persistPath, json);
         }
         catch (Exception ex)
         {

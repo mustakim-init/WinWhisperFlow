@@ -1,6 +1,8 @@
+using System.IO;
+using System.Text.Json;
 using System.Windows;
 using System.Windows.Interop;
-using System.Windows.Media.Animation;
+using Microsoft.Web.WebView2.Core;
 
 namespace WinWhisperFlow;
 
@@ -10,80 +12,124 @@ public partial class OverlayWindow : Window
     private const int WsExToolWindow = 0x00000080;
     private const int WsExNoActivate = 0x08000000;
     private const int WsExTransparent = 0x00000020;
-    private Storyboard? _storyboard;
-    private System.Timers.Timer? _doneTimer;
+    private System.Windows.Threading.DispatcherTimer? _doneTimer;
+    private bool _webViewReady;
+    private object? _pendingMessage;
 
     public OverlayWindow()
     {
         InitializeComponent();
-        Loaded += (_, _) =>
+        Loaded += OnLoaded;
+    }
+
+    private async void OnLoaded(object sender, RoutedEventArgs e)
+    {
+        string baseDir = AppContext.BaseDirectory;
+        string overlayDir = Path.GetFullPath(Path.Combine(baseDir, "WebUI"));
+        if (!Directory.Exists(overlayDir))
+            overlayDir = Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "WebUI"));
+
+        // Must be set BEFORE EnsureCoreWebView2Async for transparency to work
+        OverlayWebView.DefaultBackgroundColor = System.Drawing.Color.FromArgb(0, 0, 0, 0);
+
+        await OverlayWebView.EnsureCoreWebView2Async();
+
+        OverlayWebView.CoreWebView2.Settings.IsScriptEnabled = true;
+        OverlayWebView.CoreWebView2.Settings.IsWebMessageEnabled = true;
+        OverlayWebView.CoreWebView2.Settings.AreDefaultScriptDialogsEnabled = false;
+        OverlayWebView.CoreWebView2.Settings.IsStatusBarEnabled = false;
+
+        // Navigate to overlay.html via file path
+        string overlayPath = Path.Combine(overlayDir, "overlay.html");
+        if (File.Exists(overlayPath))
         {
-            PositionAboveTaskbar();
-        };
+            OverlayWebView.CoreWebView2.NavigationCompleted += (_, _) =>
+            {
+                _webViewReady = true;
+                FlushPendingMessage();
+            };
+            OverlayWebView.CoreWebView2.Navigate(overlayPath);
+        }
+
+        PositionAboveTaskbar();
     }
 
     public void ShowListening()
     {
         StopDoneTimer();
-        OverlayText.Text = "Listening";
-        DonePanel.Visibility = Visibility.Collapsed;
-        BlobPanel.Visibility = Visibility.Visible;
-        ShowOverlay();
+        PostMessage(new { type = "overlay_state", state = "listening", text = "Listening" });
+        Show();
     }
 
     public void ShowThinking()
     {
         StopDoneTimer();
-        OverlayText.Text = "Transcribing";
-        DonePanel.Visibility = Visibility.Collapsed;
-        BlobPanel.Visibility = Visibility.Visible;
-        ShowOverlay();
+        PostMessage(new { type = "overlay_state", state = "transcribing", text = "Transcribing..." });
+        Show();
     }
 
     public void ShowDone(string message, int durationMs = 3500)
     {
-        _storyboard?.Stop(this);
-        DoneText.Text = message;
-        BlobPanel.Visibility = Visibility.Collapsed;
-        DonePanel.Visibility = Visibility.Visible;
+        PostMessage(new { type = "overlay_state", state = "done", text = message });
         PositionAboveTaskbar();
         Show();
 
         StopDoneTimer();
-        _doneTimer = new System.Timers.Timer(durationMs) { AutoReset = false };
-        _doneTimer.Elapsed += (_, _) =>
-            Dispatcher.InvokeAsync(HideOverlay);
+        _doneTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(durationMs) };
+        _doneTimer.Tick += (_, _) => HideOverlay();
+        _doneTimer.Start();
+    }
+
+    public void ShowError(string message)
+    {
+        StopDoneTimer();
+        PostMessage(new { type = "overlay_state", state = "error", text = message });
+        Show();
+
+        _doneTimer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(5000) };
+        _doneTimer.Tick += (_, _) => HideOverlay();
         _doneTimer.Start();
     }
 
     public void HideOverlay()
     {
         StopDoneTimer();
-        _storyboard?.Stop(this);
+        PostMessage(new { type = "overlay_state", state = "hidden" });
         Hide();
     }
 
     public void SetAudioLevel(float level)
     {
-        level = Math.Clamp(level, 0, 1);
-        double primaryScale = 0.92 + level * 0.85;
-        double secondaryScale = 0.9 + level * 0.55;
-        double tertiaryScale = 0.95 + level * 0.7;
-
-        Bubble1Scale.ScaleX = secondaryScale;
-        Bubble1Scale.ScaleY = secondaryScale;
-        Bubble2Scale.ScaleX = primaryScale;
-        Bubble2Scale.ScaleY = primaryScale;
-        Bubble3Scale.ScaleX = tertiaryScale;
-        Bubble3Scale.ScaleY = tertiaryScale;
+        PostMessage(new { type = "audio_level", level });
     }
 
-    private void ShowOverlay()
+    public void SetSpectrum(float[] bands)
     {
-        PositionAboveTaskbar();
-        Show();
-        _storyboard ??= (Storyboard)FindResource("ListenAnim");
-        _storyboard.Begin(this, true);
+        PostMessage(new { type = "spectrum", bands });
+    }
+
+    private void PostMessage(object msg)
+    {
+        if (!_webViewReady)
+        {
+            _pendingMessage ??= msg;
+            return;
+        }
+        try
+        {
+            string json = JsonSerializer.Serialize(msg);
+            _ = OverlayWebView.Dispatcher.BeginInvoke(() =>
+                OverlayWebView.CoreWebView2?.PostWebMessageAsJson(json));
+        }
+        catch { }
+    }
+
+    private void FlushPendingMessage()
+    {
+        if (_pendingMessage is null) return;
+        var msg = _pendingMessage;
+        _pendingMessage = null;
+        PostMessage(msg);
     }
 
     private void PositionAboveTaskbar()
@@ -93,20 +139,11 @@ public partial class OverlayWindow : Window
         Top = workArea.Bottom - Height - 18;
     }
 
-    private void ApplyOsdWindowStyles()
-    {
-        var helper = new WindowInteropHelper(this);
-        IntPtr handle = helper.Handle;
-        nint style = GetWindowLongPtr(handle, GwlExStyle);
-        SetWindowLongPtr(handle, GwlExStyle, style | WsExToolWindow | WsExNoActivate | WsExTransparent);
-    }
-
     private void StopDoneTimer()
     {
         if (_doneTimer is not null)
         {
             _doneTimer.Stop();
-            _doneTimer.Dispose();
             _doneTimer = null;
         }
     }
@@ -114,7 +151,10 @@ public partial class OverlayWindow : Window
     protected override void OnSourceInitialized(EventArgs e)
     {
         base.OnSourceInitialized(e);
-        ApplyOsdWindowStyles();
+        var helper = new WindowInteropHelper(this);
+        IntPtr handle = helper.Handle;
+        nint style = GetWindowLongPtr(handle, GwlExStyle);
+        SetWindowLongPtr(handle, GwlExStyle, style | WsExToolWindow | WsExNoActivate | WsExTransparent);
     }
 
     protected override void OnClosed(EventArgs e)

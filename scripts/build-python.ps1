@@ -19,4 +19,8 @@ Write-Host "Building whisper_worker.exe (CPU)..."
 Write-Host "Building whisper_worker_gpu.exe (GPU)..."
 & $PyInstaller ".\whisper_worker_gpu.spec"
 
+New-Item -ItemType Directory -Force -Path ".\stt_engine\dist" | Out-Null
+Copy-Item ".\dist\whisper_worker.exe" ".\stt_engine\dist\whisper_worker.exe" -Force
+Copy-Item ".\dist\whisper_worker_gpu.exe" ".\stt_engine\dist\whisper_worker_gpu.exe" -Force
+
 Write-Host "Python workers bundled into stt_engine\dist."

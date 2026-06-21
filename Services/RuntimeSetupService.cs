@@ -5,12 +5,14 @@ namespace WinWhisperFlow.Services;
 
 public sealed class RuntimeSetupService
 {
+    public record SetupStep(string Id, string Label, string Status, string? Error = null);
+
+    public event EventHandler<IReadOnlyList<SetupStep>>? StepsChanged;
+
     public async Task<bool> IsReadyAsync()
     {
         if (!File.Exists(RuntimePaths.UserVenvPython) && !File.Exists(FindProjectVenvPython()))
-        {
             return false;
-        }
 
         string python = File.Exists(RuntimePaths.UserVenvPython)
             ? RuntimePaths.UserVenvPython
@@ -19,91 +21,77 @@ public sealed class RuntimeSetupService
         var gpu = new GpuDetectionService();
         var (provider, _) = gpu.Detect();
         string imports = provider is "cuda" or "dml"
-            ? "import faster_whisper; import requests; import sherpa_onnx"
-            : "import faster_whisper; import requests; import onnxruntime";
+            ? "import faster_whisper; import requests; import onnxruntime; import librosa; import soundfile"
+            : "import faster_whisper; import requests; import soundfile";
 
-        var psi = new ProcessStartInfo
-        {
-            FileName = python,
-            Arguments = $"-c \"{imports}\"",
-            UseShellExecute = false,
-            RedirectStandardError = true,
-            RedirectStandardOutput = true,
-            CreateNoWindow = true,
-        };
-
-        using var process = Process.Start(psi);
-        if (process is null) return false;
-        var timeout = Task.Delay(30000);
-        var exited = process.WaitForExitAsync();
-        await Task.WhenAny(exited, timeout);
-        if (!process.HasExited)
-        {
-            try { process.Kill(); } catch { }
-            return false;
-        }
-        return process.ExitCode == 0;
+        string code = $"import sys; {imports}";
+        int exitCode = await RunSilentAsync(python, $"-c \"{code}\"", null, 30000);
+        return exitCode == 0;
     }
 
-    public async Task SetupAsync(Action<string> log)
+    public async Task AutoSetupAsync(CancellationToken ct = default)
     {
-        Directory.CreateDirectory(RuntimePaths.RuntimeRoot);
-        string requirementsPath = ResolveRequirementsPath();
-        string venvPath = Path.Combine(RuntimePaths.RuntimeRoot, ".venv");
-        string venvPython = Path.Combine(venvPath, "Scripts", "python.exe");
-        string batPath = Path.Combine(RuntimePaths.RuntimeRoot, "setup.bat");
-
-        bool needsVenv = !File.Exists(RuntimePaths.UserVenvPython);
-
-        log("A console window will open showing setup progress. Close it when done.");
-        log(needsVenv ? "Step 1: Creating Python virtual environment..." : "Step 1: Virtual env exists, skipping.");
-
-        var lines = new List<string>
+        var steps = new List<SetupStep>
         {
-            "@echo off",
-            "title WinWhisperFlow Setup",
-            "cd /d \"" + RuntimePaths.RuntimeRoot + "\"",
-            "echo ===== WinWhisperFlow Setup =====",
-            "echo.",
+            new("python", "Checking Python...", "pending"),
+            new("venv", "Creating virtual environment...", "pending"),
+            new("packages", "Installing dependencies...", "pending"),
+            new("gpu", "Detecting GPU...", "pending"),
         };
 
-        if (needsVenv)
+        void Emit() => StepsChanged?.Invoke(this, steps.AsReadOnly());
+
+        // Step 1: Check Python
+        steps[0] = steps[0] with { Status = "running" };
+        Emit();
+
+        bool pythonFound = await CheckPythonExistsAsync(ct);
+        if (!pythonFound)
         {
-            lines.Add("echo [Step 1] Creating Python virtual environment...");
-            lines.Add("python -m venv \"" + venvPath + "\"");
-            lines.Add("if errorlevel 1 (");
-            lines.Add("    echo.");
-            lines.Add("    echo FAILED: Could not create virtual environment.");
-            lines.Add("    echo Make sure Python 3.10+ is installed and available as 'python'.");
-            lines.Add("    pause");
-            lines.Add("    exit /b 1");
-            lines.Add(")");
-            lines.Add("echo [OK] Virtual environment created.");
-            lines.Add("echo.");
+            steps[0] = steps[0] with { Status = "error", Error = "Python 3.10+ not found. Install from python.org" };
+            Emit();
+            return;
+        }
+        steps[0] = steps[0] with { Status = "done" };
+        Emit();
+        ct.ThrowIfCancellationRequested();
+
+        // Step 2: Create venv if needed
+        steps[1] = steps[1] with { Status = "running" };
+        Emit();
+
+        string venvPath = Path.Combine(RuntimePaths.RuntimeRoot, ".venv");
+        string venvPython = Path.Combine(venvPath, "Scripts", "python.exe");
+
+        if (!File.Exists(venvPython))
+        {
+            Directory.CreateDirectory(RuntimePaths.RuntimeRoot);
+            int venvResult = await RunSilentAsync("python", $" -m venv \"{venvPath}\"", RuntimePaths.RuntimeRoot, 60000, ct);
+            if (venvResult != 0 || !File.Exists(venvPython))
+            {
+                steps[1] = steps[1] with { Status = "error", Error = "Failed to create virtual environment." };
+                Emit();
+                return;
+            }
+        }
+        steps[1] = steps[1] with { Status = "done" };
+        Emit();
+        ct.ThrowIfCancellationRequested();
+
+        // Step 3: Install packages
+        steps[2] = steps[2] with { Status = "running" };
+        Emit();
+
+        string requirementsPath = ResolveRequirementsPath();
+        int pipResult = await RunSilentAsync(venvPython, $"-m pip install -r \"{requirementsPath}\"", null, 300000, ct);
+        if (pipResult != 0)
+        {
+            steps[2] = steps[2] with { Status = "error", Error = "pip install failed. Check your internet connection." };
+            Emit();
+            return;
         }
 
-        lines.Add("echo [Step 2] Upgrading pip...");
-        lines.Add("\"" + venvPython + "\" -m pip install --upgrade pip");
-        lines.Add("if errorlevel 1 (");
-        lines.Add("    echo.");
-        lines.Add("    echo FAILED: Could not upgrade pip.");
-        lines.Add("    pause");
-        lines.Add("    exit /b 1");
-        lines.Add(")");
-        lines.Add("echo [OK] Pip upgraded.");
-        lines.Add("echo.");
-
-        lines.Add("echo [Step 3] Installing CPU Python packages...");
-        lines.Add("\"" + venvPython + "\" -m pip install -r \"" + requirementsPath + "\"");
-        lines.Add("if errorlevel 1 (");
-        lines.Add("    echo.");
-        lines.Add("    echo FAILED: pip install CPU packages failed. Check the error above.");
-        lines.Add("    pause");
-        lines.Add("    exit /b 1");
-        lines.Add(")");
-        lines.Add("echo [OK] CPU packages installed.");
-        lines.Add("echo.");
-
+        // Step 3b: GPU packages
         var gpu = new GpuDetectionService();
         var (provider, gpuName) = gpu.Detect();
         string gpuPackage = provider switch
@@ -115,60 +103,77 @@ public sealed class RuntimeSetupService
 
         if (!string.IsNullOrEmpty(gpuPackage))
         {
-            lines.Add("echo [Step 4] Installing GPU Python packages for detected GPU...");
-            lines.Add("echo Detected: " + gpuName);
-            lines.Add("echo Package: " + gpuPackage.Replace(">", "^>"));
-            lines.Add("\"" + venvPython + "\" -m pip install \"" + gpuPackage + "\"");
-            lines.Add("if errorlevel 1 (");
-            lines.Add("    echo.");
-            lines.Add("    echo WARNING: GPU package failed to install.");
-            lines.Add("    echo For CUDA: install NVIDIA CUDA Toolkit 12.x and cuDNN");
-            lines.Add("    echo For DirectML: update your GPU drivers");
-            lines.Add("    pause");
-            lines.Add(") else (");
-            lines.Add("    echo [OK] GPU package installed.");
-            lines.Add(")");
-            lines.Add("echo.");
+            int gpuPipResult = await RunSilentAsync(venvPython, $"-m pip install \"{gpuPackage}\" \"librosa>=0.10.0\"", null, 180000, ct);
+            if (gpuPipResult != 0)
+            {
+                steps[2] = steps[2] with { Status = "error", Error = $"GPU package '{gpuPackage}' and librosa install failed (exit code {gpuPipResult}). GPU acceleration disabled." };
+                Emit();
+            }
+        }
+
+        if (steps[2].Status != "error")
+        {
+            steps[2] = steps[2] with { Status = "done" };
+            Emit();
+        }
+        ct.ThrowIfCancellationRequested();
+
+        // Step 4: GPU detection
+        steps[3] = steps[3] with { Status = "running" };
+        Emit();
+
+        string label = gpuName;
+        if (!string.IsNullOrEmpty(label))
+        {
+            steps[3] = steps[3] with { Status = "done", Label = $"GPU: {label}" };
         }
         else
         {
-            lines.Add("echo [Step 4] No compatible GPU detected. Skipping GPU packages.");
-            lines.Add("echo.");
+            steps[3] = steps[3] with { Status = "done", Label = "No GPU acceleration detected. Using CPU." };
         }
+        Emit();
+    }
 
-        lines.Add("echo.");
-        lines.Add("echo ===== Setup complete! ===== ");
-        lines.Add("timeout /t 3 /nobreak >nul");
-        lines.Add("exit /b 0");
+    private static async Task<bool> CheckPythonExistsAsync(CancellationToken ct)
+    {
+        int exitCode = await RunSilentAsync("python", "--version", null, 10000, ct);
+        return exitCode == 0;
+    }
 
-        await File.WriteAllLinesAsync(batPath, lines);
-
+    private static async Task<int> RunSilentAsync(string fileName, string arguments, string? workingDir, int timeoutMs, CancellationToken ct = default)
+    {
         var psi = new ProcessStartInfo
         {
-            FileName = batPath,
-            UseShellExecute = true,
-            CreateNoWindow = false,
-            WindowStyle = ProcessWindowStyle.Normal
+            FileName = fileName,
+            Arguments = arguments,
+            WorkingDirectory = workingDir ?? Environment.CurrentDirectory,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
         };
 
-        using var process = Process.Start(psi) ?? throw new InvalidOperationException("Could not start setup script.");
-        await process.WaitForExitAsync();
+        using var process = Process.Start(psi);
+        if (process is null) return -1;
 
-        try { File.Delete(batPath); } catch { }
+        // Drain stdout/stderr asynchronously to prevent deadlock from full pipe buffers
+        process.OutputDataReceived += (_, _) => { };
+        process.ErrorDataReceived += (_, _) => { };
+        process.BeginOutputReadLine();
+        process.BeginErrorReadLine();
 
-        if (process.ExitCode != 0)
+        try
         {
-            throw new InvalidOperationException(
-                $"Setup failed (exit code {process.ExitCode}). Check the console window output for details.");
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            cts.CancelAfter(timeoutMs);
+            await process.WaitForExitAsync(cts.Token);
+            return process.ExitCode;
         }
-
-        if (!File.Exists(venvPython))
+        catch (OperationCanceledException)
         {
-            throw new InvalidOperationException(
-                "Python virtual environment was not created. Make sure Python 3.10+ is installed.");
+            try { process.Kill(entireProcessTree: true); } catch { }
+            return -1;
         }
-
-        log("Setup completed successfully.");
     }
 
     private static string ResolveRequirementsPath()

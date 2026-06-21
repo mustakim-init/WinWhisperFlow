@@ -9,10 +9,22 @@ public sealed class TextInjector
 {
     public void CopyUnicodeText(string text)
     {
-        if (!string.IsNullOrWhiteSpace(text))
+        if (string.IsNullOrWhiteSpace(text)) return;
+        System.Windows.Application.Current?.Dispatcher.Invoke(() =>
         {
-            System.Windows.Clipboard.SetText(text, System.Windows.TextDataFormat.UnicodeText);
-        }
+            for (int attempt = 0; attempt < 2; attempt++)
+            {
+                try
+                {
+                    System.Windows.Clipboard.SetText(text, System.Windows.TextDataFormat.UnicodeText);
+                    return;
+                }
+                catch (Exception ex) when (attempt == 0)
+                {
+                    Debug.WriteLine($"[TextInjector] Clipboard set failed: {ex.Message}");
+                }
+            }
+        });
     }
 
     public async Task PasteUnicodeTextAsync(string text, IntPtr targetWindow, bool keepClipboard)
@@ -22,7 +34,7 @@ public sealed class TextInjector
         System.Windows.IDataObject? previousClipboard = keepClipboard ? null : TryGetClipboard();
         try
         {
-            System.Windows.Clipboard.SetText(text, System.Windows.TextDataFormat.UnicodeText);
+            RetryClipboardSet(text);
             WindowFocusService.TryActivate(targetWindow);
             await Task.Delay(100);
             SendCtrlV();
@@ -78,9 +90,24 @@ public sealed class TextInjector
         SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
     }
 
+    private static void RetryClipboardSet(string text)
+    {
+        System.Windows.Application.Current?.Dispatcher.Invoke(() =>
+        {
+            for (int attempt = 0; attempt < 2; attempt++)
+            {
+                try { System.Windows.Clipboard.SetText(text, System.Windows.TextDataFormat.UnicodeText); return; }
+                catch (Exception ex) when (attempt == 0)
+                {
+                    Debug.WriteLine($"[TextInjector] Clipboard retry: {ex.Message}");
+                }
+            }
+        });
+    }
+
     private static System.Windows.IDataObject? TryGetClipboard()
     {
-        try { return System.Windows.Clipboard.GetDataObject(); }
+        try { return System.Windows.Application.Current?.Dispatcher.Invoke(() => System.Windows.Clipboard.GetDataObject()); }
         catch { return null; }
     }
 
