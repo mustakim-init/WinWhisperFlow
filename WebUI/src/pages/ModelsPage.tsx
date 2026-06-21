@@ -3,6 +3,7 @@ import { Download, Trash2, Check, Loader2 } from 'lucide-react';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { Progress } from '../components/ui/Progress';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle, AlertDialogTrigger } from '../components/ui/AlertDialog';
 import { send } from '../bridge/ipc';
 import { useIpcEffect } from '../hooks/useIpcEffect';
 import { useDownloadStore } from '../stores/downloadStore';
@@ -145,6 +146,9 @@ export function ModelsPage() {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-sm font-medium">{m.displayName}</span>
+            <Badge variant="outline" className="text-[9px] px-1.5 py-0 uppercase tracking-wider">
+              {m.provider}
+            </Badge>
             {m.loaded && (
               <Badge className="text-[10px] bg-accent/10 border-accent/20 text-accent font-medium hover:bg-accent/15">
                 Loaded
@@ -188,15 +192,33 @@ export function ModelsPage() {
             </Button>
           ) : m.downloaded ? (
             <div className="flex gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                className="text-destructive hover:bg-destructive/10 hover:text-destructive h-8 w-8 p-0"
-                onClick={() => handleDelete(m.name)}
-                title="Delete Model"
-              >
-                <Trash2 size={13} />
-              </Button>
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="text-destructive hover:bg-destructive/10 hover:text-destructive h-8 w-8 p-0"
+                    title="Delete Model"
+                  >
+                    <Trash2 size={13} />
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Delete {m.displayName}?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      This will remove the model files from disk ({formatSize(m.size)}).
+                      You can download it again later.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction onClick={() => handleDelete(m.name)} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+                      Delete
+                    </AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
               <Button
                 variant="secondary"
                 size="sm"

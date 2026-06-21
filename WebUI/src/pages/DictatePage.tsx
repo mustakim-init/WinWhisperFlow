@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from 'framer-motion';
 import { Copy, Loader2, Mic, Square } from 'lucide-react';
-import React from 'react';
+import React, { useMemo } from 'react';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { Select } from '../components/ui/Select';
@@ -110,10 +110,34 @@ export function DictatePage() {
             </motion.button>
           </div>
 
-          {/* Audio level meter */}
+          {/* Audio level bars */}
           {store.isListening && (
-            <div className="w-48">
-              <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
+            <div className="flex flex-col items-center gap-3">
+              <div className="flex items-center gap-[3px] h-6">
+                {[0, 1, 2, 3, 4].map((i) => {
+                  const seed = useMemo(() => Math.random() * 0.5 + 0.5, []);
+                  return (
+                    <motion.div
+                      key={i}
+                      className="w-[3px] rounded-full bg-accent"
+                      animate={{
+                        height: [
+                          8,
+                          8 + (store.audioLevel * 20 + 4) * seed,
+                          8,
+                        ],
+                      }}
+                      transition={{
+                        repeat: Infinity,
+                        duration: 0.4 + i * 0.08,
+                        ease: 'easeInOut',
+                        delay: i * 0.06,
+                      }}
+                    />
+                  );
+                })}
+              </div>
+              <div className="h-1 w-48 rounded-full bg-muted overflow-hidden">
                 <motion.div
                   animate={{ width: `${Math.min(100, store.audioLevel * 100)}%` }}
                   transition={{ duration: 0.05 }}
