@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.Linq;
 using System.IO;
 using System.Text.Json;
@@ -342,6 +344,115 @@ public sealed class UIBridge : IDisposable
                     {
                         _selectedLanguage = GetStringProp(root, "value", "en");
                     }
+                    else if (settingKey == "theme")
+                    {
+                        string theme = GetStringProp(root, "value", "dark");
+                        Post(new { type = "log", message = $"Theme set to {theme}" });
+                    }
+                    else if (settingKey == "hotkey_chord")
+                    {
+                        if (root.TryGetProperty("value", out var chordVal) && chordVal.ValueKind == JsonValueKind.Array)
+                        {
+                            var vkCodes = new List<int>();
+                            foreach (var item in chordVal.EnumerateArray())
+                            {
+                                string? keyName = item.GetString();
+                                if (keyName is not null)
+                                {
+                                    int vk = KeyNameToVkCode(keyName);
+                                    if (vk > 0) vkCodes.Add(vk);
+                                }
+                            }
+                            if (vkCodes.Count > 0)
+                                _hotkey.UpdateChord(vkCodes);
+                        }
+                    }
+                    else if (settingKey == "auto_paste")
+                    {
+                        // Auto-paste setting handled in ToggleListeningAsync path
+                        Post(new { type = "log", message = $"Auto-paste set" });
+                    }
+                    else if (settingKey == "push_to_talk")
+                    {
+                        Post(new { type = "log", message = $"Push-to-talk set" });
+                    }
+                    else if (settingKey == "model_dir")
+                    {
+                        string dir = GetStringProp(root, "value");
+                        if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
+                        {
+                            Post(new { type = "log", message = $"Model directory changed to {dir}" });
+                        }
+                        else
+                        {
+                            Post(new { type = "log", message = "Model directory reset to default" });
+                        }
+                    }
+                    break;
+                }
+
+                case "pick_directory":
+                {
+                    string purpose = GetStringProp(root, "purpose");
+                    // Use interactive folder picker on the UI thread
+                    _ = _webView.Dispatcher.InvokeAsync(async () =>
+                    {
+                        try
+                        {
+                            // Import Windows Forms for folder picker, or use WPF's
+                            // Since we're in WPF, use FolderBrowserDialog from WinForms
+                            var dialog = new System.Windows.Forms.FolderBrowserDialog();
+                            dialog.Description = purpose == "models"
+                                ? "Select models storage directory"
+                                : "Select a directory";
+                            dialog.UseDescriptionForTitle = true;
+
+                            // Show dialog on UI thread
+                            if (System.Windows.Application.Current?.Dispatcher is { } dispatcher)
+                            {
+                                await dispatcher.BeginInvoke(() =>
+                                {
+                                    var result = dialog.ShowDialog();
+                                    if (result == System.Windows.Forms.DialogResult.OK)
+                                    {
+                                        Post(new { type = "directory_picked", path = dialog.SelectedPath });
+                                    }
+                                    else
+                                    {
+                                        Post(new { type = "directory_picked", path = (string?)null });
+                                    }
+                                });
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            Post(new { type = "log", message = $"Folder picker error: {ex.Message}" });
+                            Post(new { type = "directory_picked", path = (string?)null });
+                        }
+                    });
+                    break;
+                }
+
+                case "open_directory":
+                {
+                    string openPath = GetStringProp(root, "path");
+                    string target = openPath switch
+                    {
+                        "models" => Path.Combine(RuntimePaths.RuntimeRoot, "models"),
+                        "logs" => RuntimePaths.LogPath,
+                        _ => RuntimePaths.AppDataRoot
+                    };
+                    try
+                    {
+                        if (Directory.Exists(target))
+                            Process.Start("explorer.exe", target);
+                        else if (File.Exists(target))
+                            Process.Start("explorer.exe", $"/select,\"{target}\"");
+                    }
+                    catch (Exception ex)
+                    {
+                        Post(new { type = "log", message = $"Open folder error: {ex.Message}" });
+                    }
                     break;
                 }
 
@@ -410,6 +521,37 @@ public sealed class UIBridge : IDisposable
     private static string GetStringProp(JsonElement root, string key, string fallback = "")
     {
         return root.TryGetProperty(key, out var prop) ? prop.GetString() ?? fallback : fallback;
+    }
+
+    private static int KeyNameToVkCode(string keyName)
+    {
+        return keyName switch
+        {
+            "ControlLeft" or "ControlRight" => 0x11,
+            "ShiftLeft" or "ShiftRight" => 0x10,
+            "Alt" or "AltGr" => 0x12,
+            "MetaLeft" or "MetaRight" => 0x5B,
+            "Space" => 0x20,
+            "Tab" => 0x09,
+            "Return" => 0x0D,
+            "Backspace" => 0x08,
+            "Delete" => 0x2E,
+            "Escape" => 0x1B,
+            "Insert" => 0x2D,
+            "Home" => 0x24,
+            "End" => 0x23,
+            "PageUp" => 0x21,
+            "PageDown" => 0x22,
+            "UpArrow" => 0x26,
+            "DownArrow" => 0x28,
+            "LeftArrow" => 0x25,
+            "RightArrow" => 0x27,
+            "CapsLock" => 0x14,
+            _ when keyName.StartsWith("F") && int.TryParse(keyName[1..], out int fn) && fn >= 1 && fn <= 24 => fn + 0x69,
+            _ when keyName.StartsWith("Digit") && int.TryParse(keyName[5..], out int dn) && dn >= 0 && dn <= 9 => 0x30 + dn,
+            _ when keyName.StartsWith("Key") && keyName.Length == 4 => char.ToUpperInvariant(keyName[3]),
+            _ => 0,
+        };
     }
 
     private async Task RunHealthCheckAsync()

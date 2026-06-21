@@ -88,4 +88,6 @@ export type C2SMessage =
   | { type: 'get_models_status' }
   | { type: 'get_model_note'; model: string }
   | { type: 'setup_runtime' }
-  | { type: 'delete_history_entry'; ts: string; text: string };
+  | { type: 'delete_history_entry'; ts: string; text: string }
+  | { type: 'pick_directory'; purpose: string }
+  | { type: 'open_directory'; path: string };

@@ -33,14 +33,22 @@
     @apply border-border;
   }
   *::-webkit-scrollbar {
-    width: 0;
-    height: 0;
+    display: none;
   }
   * {
     scrollbar-width: none;
+    -ms-overflow-style: none;
   }
   html, body {
-    overflow: hidden;
+    @apply overflow-hidden;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    margin: 0;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
   }
 }
 
@@ -91,16 +99,7 @@
   --sidebar: 0 0% 4%;
 }
 
-body {
-  background-color: hsl(var(--background));
-  color: hsl(var(--foreground));
-  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-  overflow: hidden;
-  margin: 0;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  text-rendering: optimizeLegibility;
-}
+/* Body bg/text handled in @layer base */
 
 .dark .sidebar-logo {
   filter: drop-shadow(0 0 10px hsl(var(--accent) / 0.5))
@@ -114,7 +113,7 @@ body {
 }
 
 @keyframes fadeInScale {
-  from { opacity: 0; transform: scale(0.95); }
+  from { opacity: 0; transform: scale(0.8); }
   to { opacity: 1; transform: scale(1); }
 }
 
@@ -123,11 +122,12 @@ body {
 }
 
 .animate-fade-in-scale {
-  animation: fadeInScale 0.3s ease-out;
+  animation: fadeInScale 0.5s ease-out forwards;
 }
 
 .animate-fade-in-delayed {
-  animation: fadeIn 0.5s ease-out 0.3s both;
+  animation: fadeIn 0.5s ease-out 0.15s forwards;
+  opacity: 0;
 }
 
 .writing-vertical {

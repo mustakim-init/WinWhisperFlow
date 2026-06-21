@@ -3,6 +3,8 @@ import { LayoutGroup, motion } from 'framer-motion';
 import { GeneralPage } from './GeneralPage';
 import { AudioPage } from './AudioPage';
 import { TranscriptionSettingsPage } from './TranscriptionPage';
+import { CapturesPage } from './CapturesPage';
+import { StoragePage } from './StoragePage';
 import { GpuPage } from './GpuPage';
 import { LogsPage } from './LogsPage';
 import { AboutPage } from './AboutPage';
@@ -11,6 +13,8 @@ const settingsTabs = [
   { id: 'general', label: 'General' },
   { id: 'audio', label: 'Audio' },
   { id: 'transcription', label: 'Transcription' },
+  { id: 'captures', label: 'Captures' },
+  { id: 'storage', label: 'Storage' },
   { id: 'gpu', label: 'GPU' },
   { id: 'logs', label: 'Logs' },
   { id: 'about', label: 'About' },
@@ -20,6 +24,8 @@ const pages: Record<string, React.FC> = {
   general: GeneralPage,
   audio: AudioPage,
   transcription: TranscriptionSettingsPage,
+  captures: CapturesPage,
+  storage: StoragePage,
   gpu: GpuPage,
   logs: LogsPage,
   about: AboutPage,

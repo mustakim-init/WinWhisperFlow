@@ -1,4 +1,6 @@
+using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Windows.Input;
 
@@ -13,6 +15,8 @@ public sealed class GlobalHotkeyService : IDisposable
     private IntPtr _hookId;
     private DateTime _lastToggleUtc = DateTime.MinValue;
 
+    private HashSet<int> _chordKeys = new() { KeyInterop.VirtualKeyFromKey(Key.S), 0x11, 0x12 }; // Ctrl+Alt+S
+
     public event EventHandler? ToggleRequested;
 
     public GlobalHotkeyService()
@@ -22,41 +26,36 @@ public sealed class GlobalHotkeyService : IDisposable
 
     public void Start()
     {
-        if (_hookId != IntPtr.Zero)
-        {
-            return;
-        }
+        if (_hookId != IntPtr.Zero) return;
 
         using Process currentProcess = Process.GetCurrentProcess();
         using ProcessModule? currentModule = currentProcess.MainModule;
         IntPtr moduleHandle = currentModule is null ? IntPtr.Zero : GetModuleHandle(currentModule.ModuleName);
         _hookId = SetWindowsHookEx(WhKeyboardLl, _proc, moduleHandle, 0);
         if (_hookId == IntPtr.Zero)
-        {
             throw new InvalidOperationException("Failed to install global hotkey hook.");
-        }
     }
 
-    private const int VkCapital = 0x14;
+    public void UpdateChord(IReadOnlyList<int> vkCodes)
+    {
+        _chordKeys = new HashSet<int>(vkCodes);
+    }
 
     private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
     {
         if (nCode >= 0 && (wParam == WmKeyDown || wParam == WmSysKeyDown))
         {
             int vkCode = Marshal.ReadInt32(lParam);
-            bool isCtrlAltS = vkCode == KeyInterop.VirtualKeyFromKey(Key.S)
-                              && IsKeyDown(0x11)
-                              && IsKeyDown(0x12);
 
-            bool isCapsLock = vkCode == VkCapital;
+            bool chordMatch = _chordKeys.Count > 0 && _chordKeys.All(k => k == vkCode || IsKeyDown(k));
+            bool isCapsLock = vkCode == 0x14;
 
             if (isCapsLock && CanToggle())
             {
                 ToggleRequested?.Invoke(this, EventArgs.Empty);
-                // Don't suppress Caps Lock - let it toggle normally
             }
 
-            if (isCtrlAltS && CanToggle())
+            if (chordMatch && CanToggle())
             {
                 ToggleRequested?.Invoke(this, EventArgs.Empty);
                 return new IntPtr(1);
@@ -69,11 +68,7 @@ public sealed class GlobalHotkeyService : IDisposable
     private bool CanToggle()
     {
         DateTime now = DateTime.UtcNow;
-        if ((now - _lastToggleUtc).TotalMilliseconds < 350)
-        {
-            return false;
-        }
-
+        if ((now - _lastToggleUtc).TotalMilliseconds < 350) return false;
         _lastToggleUtc = now;
         return true;
     }
