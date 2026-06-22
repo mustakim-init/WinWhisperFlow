@@ -191,7 +191,6 @@ public sealed class UIBridge : IDisposable
         _overlay?.ShowListening();
         Post(new { type = "listening_status", listening = true });
         Post(new { type = "status_update", text = "Listening\u2026", variant = "warning" });
-        _ = StartStreamingLoopAsync(_streamCts.Token);
         return Task.CompletedTask;
     }
 
@@ -227,31 +226,7 @@ public sealed class UIBridge : IDisposable
         }
     }
 
-    private async Task StartStreamingLoopAsync(CancellationToken ct)
-    {
-        while (_audio.IsListening && !ct.IsCancellationRequested)
-        {
-            try { await Task.Delay(1000, ct); } catch (OperationCanceledException) { break; }
-            if (!_audio.IsListening || ct.IsCancellationRequested) break;
-
-            string? snapPath = _audio.GetTemporarySnapshot();
-            if (snapPath is null) continue;
-
-            try
-            {
-                var result = await _whisper.TranscribeAsync(snapPath, GetSelectedLanguage(), ct);
-                string text = result.Text.Trim();
-                if (!string.IsNullOrWhiteSpace(text) && _audio.IsListening && !ct.IsCancellationRequested)
-                {
-                    _overlay?.ShowTranscribing();
-                    await PublishTranscriptionAsync(text, result.Language, result.LanguageProbability, "mic", inject: false, isPartial: true);
-                }
-            }
-            catch (OperationCanceledException) { break; }
-            catch (Exception ex) { Post(new { type = "log", message = $"Streaming partial error: {ex.Message}" }); }
-            finally { try { File.Delete(snapPath); } catch { } }
-        }
-    }
+    // Streaming loop removed per user request for process once logic
 
     private void OnWebMessage(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {

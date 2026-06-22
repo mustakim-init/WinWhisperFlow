@@ -26,6 +26,7 @@ export function GeneralPage() {
 
   const handleDarkMode = (checked: boolean) => {
     setDarkMode(checked);
+    setTheme(checked ? 'dark' : 'light');
     send({ type: 'set_setting', key: 'theme', value: checked ? 'dark' : 'light' });
   };
 

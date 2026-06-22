@@ -45,9 +45,10 @@ export function canonicalKeyFromEvent(event: KeyboardEvent): string | null {
 }
 
 export function defaultChordKeys(mode: 'push' | 'toggle'): string[] {
+  // Match backend default: Ctrl+Alt+S (VK codes 0x11, 0x12, S)
   return mode === 'toggle'
-    ? ['ControlRight', 'ShiftRight', 'Space']
-    : ['ControlRight', 'ShiftRight'];
+    ? ['ControlRight', 'Alt', 'KeyS']
+    : ['ControlRight', 'Alt'];
 }
 
 export function displayLabelForKey(name: string): string {

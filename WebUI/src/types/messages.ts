@@ -64,7 +64,8 @@ export type S2CMessage =
   | { type: 'phone_mic_status'; running: boolean }
   | { type: 'history_entry'; entry: HistoryEntry }
   | { type: 'notification'; title: string; message: string; variant: 'info' | 'warning' | 'error' }
-  | { type: 'settings'; settings: Record<string, unknown> };
+  | { type: 'settings'; settings: Record<string, unknown> }
+  | { type: 'directory_picked'; path: string | null };
 
 export interface HistoryEntry {
   action: string;

@@ -133,11 +133,11 @@ public sealed class WhisperBridgeService : IDisposable
 
             var request = new { type = "transcribe", audio_path = audioPath, language };
             await proc.StandardInput.WriteLineAsync(JsonSerializer.Serialize(request));
-            string? line = await ReadLineWithTimeoutAsync(proc.StandardOutput, TimeSpan.FromSeconds(90), ct);
+            string? line = await ReadLineWithTimeoutAsync(proc.StandardOutput, Timeout.InfiniteTimeSpan, ct);
             if (line is null)
             {
                 KillWorker();
-                throw new InvalidOperationException("STT worker did not return a result within 90 seconds.");
+                throw new InvalidOperationException("STT worker closed unexpectedly.");
             }
 
             JsonDocument? doc;

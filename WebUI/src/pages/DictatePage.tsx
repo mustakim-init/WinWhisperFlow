@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from 'framer-motion';
 import { Copy, Loader2, Mic, Square } from 'lucide-react';
-import React, { useMemo } from 'react';
+import React from 'react';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { Select } from '../components/ui/Select';
@@ -34,6 +34,8 @@ export function DictatePage() {
   };
 
   const handleCopy = (text: string) => send({ type: 'copy_text', text });
+
+  const barSeeds = React.useMemo(() => [0.7, 0.9, 0.6, 1.0, 0.8], []);
 
   return (
     <div className="flex flex-col h-full min-h-0 relative max-w-3xl mx-auto w-full">
@@ -114,28 +116,25 @@ export function DictatePage() {
           {store.isListening && (
             <div className="flex flex-col items-center gap-3">
               <div className="flex items-center gap-[3px] h-6">
-                {[0, 1, 2, 3, 4].map((i) => {
-                  const seed = useMemo(() => Math.random() * 0.5 + 0.5, []);
-                  return (
-                    <motion.div
-                      key={i}
-                      className="w-[3px] rounded-full bg-accent"
-                      animate={{
-                        height: [
-                          8,
-                          8 + (store.audioLevel * 20 + 4) * seed,
-                          8,
-                        ],
-                      }}
-                      transition={{
-                        repeat: Infinity,
-                        duration: 0.4 + i * 0.08,
-                        ease: 'easeInOut',
-                        delay: i * 0.06,
-                      }}
-                    />
-                  );
-                })}
+                {barSeeds.map((seed, i) => (
+                  <motion.div
+                    key={i}
+                    className="w-[3px] rounded-full bg-accent"
+                    animate={{
+                      height: [
+                        8,
+                        8 + (store.audioLevel * 20 + 4) * seed,
+                        8,
+                      ],
+                    }}
+                    transition={{
+                      repeat: Infinity,
+                      duration: 0.4 + i * 0.08,
+                      ease: 'easeInOut',
+                      delay: i * 0.06,
+                    }}
+                  />
+                ))}
               </div>
               <div className="h-1 w-48 rounded-full bg-muted overflow-hidden">
                 <motion.div

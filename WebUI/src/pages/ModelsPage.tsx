@@ -56,7 +56,10 @@ export function ModelsPage() {
       pollRef.current = undefined;
     }
     return () => {
-      if (pollRef.current) clearInterval(pollRef.current);
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = undefined;
+      }
     };
   }, [downloadState]);
 

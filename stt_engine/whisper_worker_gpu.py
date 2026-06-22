@@ -296,11 +296,6 @@ class WhisperModel:
     def transcribe(self, audio_path, language="en", no_speech_threshold=0.72, log_prob_threshold=-0.8):
         audio, sr = load_audio(audio_path)
 
-        frames = librosa.frames_to_time(
-            np.arange(self.expected_mel_frames + self.expected_mel_frames // 2),
-            sr=SAMPLE_RATE, hop_length=HOP_LENGTH, n_fft=N_FFT
-        )
-
         spec = librosa.stft(
             audio, n_fft=N_FFT, hop_length=HOP_LENGTH,
             win_length=N_FFT, window="hann", center=True,
@@ -314,30 +309,25 @@ class WhisperModel:
             htk=True, norm="slaney"
         )
         mel = mel_basis @ power
+        T = mel.shape[1]
 
-        log_spec = np.log10(np.clip(mel, a_min=1e-10, a_max=None))
-        log_spec = np.maximum(log_spec, log_spec.max(axis=0, keepdims=True) - 8.0)
-        mel_norm = (log_spec + 4.0) / 4.0
-
-        T = mel_norm.shape[1]
-        if T <= self.expected_mel_frames:
-            mel_input = np.zeros((self.n_mels, self.expected_mel_frames), dtype=np.float32)
-            mel_input[:, :T] = mel_norm[:, :T]
-            text, _ = self._transcribe_segment(
-                mel_input[np.newaxis, :, :].astype(np.float32),
-                language, no_speech_threshold, log_prob_threshold
-            )
-            return text
-
-        hop = self.expected_mel_frames // 2
+        expected = self.expected_mel_frames
+        hop = expected - 200
         texts = []
         for start in range(0, T, hop):
-            end = min(start + self.expected_mel_frames, T)
-            mel_chunk = np.zeros((self.n_mels, self.expected_mel_frames), dtype=np.float32)
+            end = min(start + expected, T)
+            mel_chunk_raw = mel[:, start:end]
+
+            log_spec = np.log10(np.clip(mel_chunk_raw, a_min=1e-10, a_max=None))
+            log_spec = np.maximum(log_spec, log_spec.max() - 8.0)
+            mel_norm = (log_spec + 4.0) / 4.0
+
+            mel_padded = np.zeros((self.n_mels, expected), dtype=np.float32)
             chunk_len = end - start
-            mel_chunk[:, :chunk_len] = mel_norm[:, start:end]
+            mel_padded[:, :chunk_len] = mel_norm
+
             text, is_silent = self._transcribe_segment(
-                mel_chunk[np.newaxis, :, :].astype(np.float32),
+                mel_padded[np.newaxis, :, :].astype(np.float32),
                 language, no_speech_threshold, log_prob_threshold
             )
             if text and not is_silent:

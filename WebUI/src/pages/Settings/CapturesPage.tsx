@@ -8,7 +8,7 @@ import { SettingRow, SettingSection } from '../../components/ui/SettingRow';
 import { ChordPicker } from '../../components/ui/ChordPicker';
 import { send } from '../../bridge/ipc';
 import { useStore } from '../../hooks/useStore';
-import { displayLabelForKey } from '../../lib/utils/keyCodes';
+import { defaultChordKeys, displayLabelForKey } from '../../lib/utils/keyCodes';
 
 export function CapturesPage() {
   const store = useStore();
@@ -32,9 +32,8 @@ export function CapturesPage() {
     send({ type: 'set_setting', key: 'push_to_talk', value: checked });
   };
 
-  const hotkeyLabel = hotkey.length > 0
-    ? hotkey.map(displayLabelForKey).join(' + ')
-    : 'Ctrl + Shift + Space';
+  const hotkeyToShow = hotkey.length > 0 ? hotkey : defaultChordKeys(pushToTalk ? 'push' : 'toggle');
+  const hotkeyLabel = hotkeyToShow.map(displayLabelForKey).join(' + ');
 
   const downloadedModels = store.availableModels
     .filter((m) => m.downloaded)

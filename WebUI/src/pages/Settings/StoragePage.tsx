@@ -4,9 +4,17 @@ import { Button } from '../../components/ui/Button';
 import { Card } from '../../components/ui/Card';
 import { SettingRow, SettingSection } from '../../components/ui/SettingRow';
 import { send } from '../../bridge/ipc';
+import { useIpcEffect } from '../../hooks/useIpcEffect';
 
 export function StoragePage() {
   const [modelDir, setModelDir] = useState('');
+
+  useIpcEffect('directory_picked', (msg) => {
+    if (msg.path) {
+      setModelDir(msg.path);
+      send({ type: 'set_setting', key: 'model_dir', value: msg.path });
+    }
+  });
 
   const handleChangeLocation = () => {
     send({ type: 'pick_directory', purpose: 'models' });

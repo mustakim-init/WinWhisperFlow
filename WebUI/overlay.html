@@ -92,6 +92,7 @@
   <script>
     const pill = document.getElementById('pill');
     const bars = Array.from({length:5}, (_, i) => document.getElementById('b'+i));
+    const domToBand = [4, 2, 0, 1, 3]; // DOM position (left→right) → bands index (center-symmetric)
     const text = document.getElementById('text');
     const timer = document.getElementById('timer');
     const checkmark = document.getElementById('checkmark');
@@ -143,7 +144,8 @@
 
     function setSpectrum(bands) {
       bars.forEach((b, i) => {
-        const val = i < bands.length ? bands[i] : 0;
+        const idx = domToBand[i];
+        const val = idx < bands.length ? bands[idx] : 0;
         b.style.height = Math.round(4 + val * 20) + 'px';
       });
     }
