@@ -2,7 +2,7 @@ import { useEffect } from 'react';
 import { onMessage, send } from '../bridge/ipc';
 import type { S2CMessage } from '../types/messages';
 import {
-  setDevice, setGpuName, setAudioDevices, setModel, setIsListening, setIsReady, setModelLoaded as storeSetModelLoaded,
+  setDevice, setGpuName, setAudioDevices, setAudioDeviceIndex, setModel, setIsListening, setIsReady, setModelLoaded as storeSetModelLoaded,
   setModelNote, setAudioLevel, setLastTranscript, setStatus, addHistory, addLog,
   setPhoneMicRunning, setPhoneMicUrl, setSetupSteps, setSetupOverall, setSetupError,
   setLanguage, setModelLoading, setAvailableModels, setPartialTranscript,
@@ -24,6 +24,7 @@ export function useGlobalBridgeSync() {
           if (msg.model) setModel(msg.model);
           if (msg.gpuName) setGpuName(msg.gpuName);
           if (msg.audioDevices) setAudioDevices(msg.audioDevices);
+          if (msg.audioDeviceIndex !== undefined) setAudioDeviceIndex(msg.audioDeviceIndex);
           useUiStore.getState().setIsReady(msg.ready);
           setIsReady(msg.ready);
           if (msg.ready && msg.error) {

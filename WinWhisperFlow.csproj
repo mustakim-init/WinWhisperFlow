@@ -40,6 +40,7 @@
   <ItemGroup>
     <Content Include="WebUI\dist\**\*" CopyToOutputDirectory="PreserveNewest" Link="WebUI\dist\%(RecursiveDir)%(Filename)%(Extension)" />
     <Content Include="WebUI\overlay.html" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="Sfx\**\*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <Target Name="BuildWebUI" BeforeTargets="Build" Condition="Exists('$(ProjectDir)WebUI\package.json')">

@@ -13,4 +13,12 @@ public static class RuntimePaths
         Path.Combine(RuntimeRoot, ".venv", "Scripts", "python.exe");
 
     public static string LogPath { get; } = Path.Combine(AppDataRoot, "winwhisper.log");
+
+    private static string? _customModelsRoot;
+
+    public static string ModelsRoot
+    {
+        get => _customModelsRoot ?? Path.Combine(RuntimeRoot, "models");
+        set => _customModelsRoot = string.IsNullOrEmpty(value) ? null : value;
+    }
 }

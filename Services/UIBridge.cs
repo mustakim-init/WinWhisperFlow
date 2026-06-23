@@ -22,6 +22,7 @@ public sealed class UIBridge : IDisposable
     private readonly StartupService _startup;
     private readonly Func<bool> _detectDarkMode;
     private readonly OverlayManager? _overlay;
+    private readonly SoundEffectService _sfx;
     private readonly GpuDetectionService _gpuDetect = new();
 
     private string _selectedLanguage = "en";
@@ -34,6 +35,7 @@ public sealed class UIBridge : IDisposable
     private CancellationTokenSource? _setupCts;
     private bool _disposed;
     private string? _gpuCache;
+    private bool _autoPasteEnabled = true;
     private readonly object _ctsLock = new();
 
     private readonly EventHandler<float> _onAudioLevel;
@@ -55,7 +57,8 @@ public sealed class UIBridge : IDisposable
         TranscriptionHistory history,
         StartupService startup,
         Func<bool> detectDarkMode,
-        OverlayManager? overlay)
+        OverlayManager? overlay,
+        SoundEffectService sfx)
     {
         _webView = webView;
         _whisper = whisper;
@@ -68,6 +71,7 @@ public sealed class UIBridge : IDisposable
         _startup = startup;
         _detectDarkMode = detectDarkMode;
         _overlay = overlay;
+        _sfx = sfx;
 
         _onAudioLevel = (_, level) =>
             Post(new { type = "audio_level", level });
@@ -165,6 +169,7 @@ public sealed class UIBridge : IDisposable
         {
             CancelStreaming();
             string? path = _audio.Stop();
+            _sfx.PlayRecordStop();
             _overlay?.ShowTranscribing();
             Post(new { type = "listening_status", listening = false });
             Post(new { type = "status_update", text = "Transcribing\u2026", variant = "warning" });
@@ -188,6 +193,7 @@ public sealed class UIBridge : IDisposable
             _streamCts = new CancellationTokenSource();
         }
         _audio.Start();
+        _sfx.PlayRecordStart();
         _overlay?.ShowListening();
         Post(new { type = "listening_status", listening = true });
         Post(new { type = "status_update", text = "Listening\u2026", variant = "warning" });
@@ -211,10 +217,11 @@ public sealed class UIBridge : IDisposable
         try
         {
             var result = await _whisper.TranscribeAsync(path, GetSelectedLanguage());
-            await PublishTranscriptionAsync(result.Text.Trim(), result.Language, result.LanguageProbability, "mic", inject: true, isPartial: false);
+            await PublishTranscriptionAsync(result.Text.Trim(), result.Language, result.LanguageProbability, "mic", inject: _autoPasteEnabled, isPartial: false);
         }
         catch (Exception ex)
         {
+            _sfx.PlayError();
             Post(new { type = "log", message = $"Transcription error: {ex.Message}" });
             Post(new { type = "status_update", text = "Error", variant = "error" });
             _overlay?.ShowError(ex.Message);
@@ -249,7 +256,7 @@ public sealed class UIBridge : IDisposable
                 case "bridge_ready":
                     if (_modelLoaded)
                     {
-                        Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, loaded = true, model = GetCompositeName(), device = _loadedDevice, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames() });
+                        Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, loaded = true, model = GetCompositeName(), device = _loadedDevice, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId });
                         Post(new { type = "model_loaded", model = GetCompositeName(), device = _loadedDevice, note = ModelNotes.GetModelNote(_loadedModel, _loadedDevice) });
                     }
                     else
@@ -315,6 +322,16 @@ public sealed class UIBridge : IDisposable
                         if (root.TryGetProperty("value", out var startupVal))
                             _startup.SetEnabled(startupVal.GetBoolean());
                     }
+                    else if (settingKey == "audio_device")
+                    {
+                        if (root.TryGetProperty("value", out var audioVal))
+                            _audio.DeviceId = audioVal.GetInt32();
+                    }
+                    else if (settingKey == "sfx")
+                    {
+                        if (root.TryGetProperty("value", out var sfxVal))
+                            _sfx.Enabled = sfxVal.GetBoolean();
+                    }
                     else if (settingKey == "language")
                     {
                         _selectedLanguage = GetStringProp(root, "value", "en");
@@ -344,22 +361,21 @@ public sealed class UIBridge : IDisposable
                     }
                     else if (settingKey == "auto_paste")
                     {
-                        // Auto-paste setting handled in ToggleListeningAsync path
-                        Post(new { type = "log", message = $"Auto-paste set" });
-                    }
-                    else if (settingKey == "push_to_talk")
-                    {
-                        Post(new { type = "log", message = $"Push-to-talk set" });
+                        if (root.TryGetProperty("value", out var pasteVal))
+                            _autoPasteEnabled = pasteVal.GetBoolean();
+                        Post(new { type = "log", message = $"Auto-paste set to {_autoPasteEnabled}" });
                     }
                     else if (settingKey == "model_dir")
                     {
                         string dir = GetStringProp(root, "value");
                         if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
                         {
+                            RuntimePaths.ModelsRoot = dir;
                             Post(new { type = "log", message = $"Model directory changed to {dir}" });
                         }
                         else
                         {
+                            RuntimePaths.ModelsRoot = "";
                             Post(new { type = "log", message = "Model directory reset to default" });
                         }
                     }
@@ -413,7 +429,7 @@ public sealed class UIBridge : IDisposable
                     string openPath = GetStringProp(root, "path");
                     string target = openPath switch
                     {
-                        "models" => Path.Combine(RuntimePaths.RuntimeRoot, "models"),
+                        "models" => RuntimePaths.ModelsRoot,
                         "logs" => RuntimePaths.LogPath,
                         _ => RuntimePaths.AppDataRoot
                     };
@@ -548,7 +564,7 @@ public sealed class UIBridge : IDisposable
             }
 
             // Unblock UI immediately — setup succeeded
-            Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, loaded = false, model = GetCompositeName(), device = _loadedDevice, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames() });
+            Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, loaded = false, model = GetCompositeName(), device = _loadedDevice, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId });
             Post(new { type = "settings", settings = new { startup = _startup.IsEnabled(), language = _selectedLanguage } });
 
             var recommended = SttRuntimeOptions.RecommendedForThisPc;
@@ -561,54 +577,52 @@ public sealed class UIBridge : IDisposable
         {
             SetModelError(ex.Message);
             Post(new { type = "log", message = $"Setup failed: {ex.Message}" });
-            Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, error = ex.Message, loaded = false, model = GetCompositeName(), device = _loadedDevice, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames() });
+            Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, error = ex.Message, loaded = false, model = GetCompositeName(), device = _loadedDevice, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId });
             Post(new { type = "status_update", text = "Setup failed", variant = "error" });
             Post(new { type = "notification", title = "Startup failed", message = ex.Message, variant = "error" });
         }
     }
 
+    private static readonly string[] ModelsBySize = { "turbo", "large-v3", "medium", "small", "base", "tiny" };
+
     private async Task LoadModelPhaseAsync(SttRuntimeOptions recommended)
     {
         try
         {
-            if (recommended.Device is "cuda" or "dml")
-            {
-                Post(new { type = "log", message = "Verifying GPU model files\u2026" });
-                Post(new { type = "status_update", text = "Verifying model files\u2026", variant = "warning" });
+            // Pick the best model that's actually on disk
+            string provider = recommended.Provider;
+            string? bestModel = FindBestAvailableModel(provider, recommended.Model);
 
-                string modelsDir = Path.Combine(RuntimePaths.RuntimeRoot, "models", $"sherpa-onnx-whisper-{recommended.Model}");
-                if (Directory.Exists(modelsDir))
-                {
-                    bool corrupt = await _whisper.VerifyGpuModelFilesAsync(recommended.Model);
-                    if (corrupt)
-                    {
-                        Post(new { type = "log", message = "Model files corrupt. Re-downloading\u2026" });
-                        Post(new { type = "status_update", text = "Re-downloading corrupt model\u2026", variant = "warning" });
-                        try { Directory.Delete(modelsDir, recursive: true); } catch { }
-                    }
-                }
+            if (bestModel is null)
+            {
+                Post(new { type = "log", message = $"No {provider} models downloaded. Go to Models page to download one." });
+                Post(new { type = "status_update", text = "No model downloaded", variant = "warning" });
+                return;
             }
 
-            Post(new { type = "log", message = $"Loading model {recommended.Model} on {recommended.Device}\u2026" });
+            var loadOpts = bestModel == recommended.Model
+                ? recommended
+                : BuildRuntimeOptions($"{bestModel}-{provider}");
+
+            Post(new { type = "log", message = $"Loading model {bestModel} on {provider}\u2026" });
             Post(new { type = "status_update", text = "Loading model\u2026", variant = "warning" });
 
-            await _whisper.StartAsync(recommended);
+            await _whisper.StartAsync(loadOpts);
             string actualDevice = _whisper.GetReportedDevice();
-            if (actualDevice != recommended.Device)
+            if (actualDevice != provider)
             {
-                Post(new { type = "log", message = $"Model loaded on {actualDevice} instead of {recommended.Device} — run Setup to fix GPU acceleration" });
-                Post(new { type = "notification", title = "GPU acceleration unavailable", message = $"Model loaded on {actualDevice}. Run Setup to enable {recommended.Device}.", variant = "warning" });
+                Post(new { type = "log", message = $"Model loaded on {actualDevice} instead of {provider} — run Setup to fix GPU acceleration" });
+                Post(new { type = "notification", title = "GPU acceleration unavailable", message = $"Model loaded on {actualDevice}. Run Setup to enable {provider}.", variant = "warning" });
             }
-            SetModelLoaded(recommended.Model, actualDevice);
+            SetModelLoaded(bestModel, actualDevice);
 
-            // Use recommended/actual values directly — not GetCompositeName() or _loadedDevice —
-            // because SetModelLoaded dispatches to the UI thread and hasn't run yet.
-            string loadedComposite = $"{recommended.Model}-{actualDevice}";
-            Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, loaded = true, model = loadedComposite, device = actualDevice, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames() });
+            string loadedComposite = $"{bestModel}-{actualDevice}";
+            Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, loaded = true, model = loadedComposite, device = actualDevice, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId });
             Post(new { type = "settings", settings = new { startup = _startup.IsEnabled(), language = _selectedLanguage } });
             foreach (var entry in _history.Entries)
                 Post(new { type = "history_entry", entry = new { action = TranscriptionHistory.ActionLabel(entry.Action), text = entry.Text, timestamp = entry.Timestamp.ToString("g"), ts = entry.Timestamp.ToString("O") } });
-            Post(new { type = "model_loaded", model = loadedComposite, device = actualDevice, note = ModelNotes.GetModelNote(recommended.Model, actualDevice) });
+            _sfx.PlayModelReady();
+            Post(new { type = "model_loaded", model = loadedComposite, device = actualDevice, note = ModelNotes.GetModelNote(bestModel, actualDevice) });
             Post(new { type = "status_update", text = "Ready", variant = "success" });
             Post(new { type = "log", message = $"Model loaded on {actualDevice}" });
             SendModelsStatus();
@@ -617,12 +631,26 @@ public sealed class UIBridge : IDisposable
         {
             SetModelError(ex.Message);
             Post(new { type = "log", message = $"Model load failed: {ex.Message}" });
-            Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, loaded = false, error = $"Model load failed: {ex.Message}", model = GetCompositeName(), device = _loadedDevice, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames() });
+            Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, loaded = false, error = $"Model load failed: {ex.Message}", model = GetCompositeName(), device = _loadedDevice, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId });
             Post(new { type = "settings", settings = new { startup = _startup.IsEnabled(), language = _selectedLanguage } });
             Post(new { type = "status_update", text = $"Model load failed: {ex.Message}", variant = "error" });
             Post(new { type = "notification", title = "Model load failed", message = ex.Message, variant = "error" });
             SendModelsStatus();
         }
+    }
+
+    private string? FindBestAvailableModel(string provider, string preferred)
+    {
+        if (_whisper.IsModelDownloaded(provider, preferred))
+            return preferred;
+
+        foreach (var name in ModelsBySize)
+        {
+            if (_whisper.IsModelDownloaded(provider, name))
+                return name;
+        }
+
+        return null;
     }
 
     private async Task RunAutoSetupAsync()
@@ -647,19 +675,45 @@ public sealed class UIBridge : IDisposable
         return Directory.GetFiles(path, "*", SearchOption.AllDirectories).Sum(f => new FileInfo(f).Length);
     }
 
-    private long GetCpuModelSize(string name, bool downloaded)
+    private long GetModelSize(string name, string provider, bool downloaded)
     {
         if (downloaded)
         {
-            string userCache = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                ".cache", "huggingface", "hub",
-                $"models--Systran--faster-whisper-{name}");
-            string localCache = Path.Combine(RuntimePaths.RuntimeRoot, "models", $"models--Systran--faster-whisper-{name}");
-            long size = GetDirectorySize(userCache);
-            if (size == 0) size = GetDirectorySize(localCache);
-            if (size > 0) return size;
+            if (provider is "dml")
+            {
+                string sherpaDir = Path.Combine(RuntimePaths.ModelsRoot, $"sherpa-onnx-whisper-{name}");
+                long size = GetDirectorySize(sherpaDir);
+                if (size > 0) return size;
+            }
+            else
+            {
+                string localCache = Path.Combine(RuntimePaths.ModelsRoot, $"models--Systran--faster-whisper-{name}");
+                long size = GetDirectorySize(localCache);
+                if (size > 0) return size;
+
+                string userCache = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                    ".cache", "huggingface", "hub",
+                    $"models--Systran--faster-whisper-{name}");
+                size = GetDirectorySize(userCache);
+                if (size > 0) return size;
+            }
         }
+
+        if (provider == "dml")
+        {
+            return name switch
+            {
+                "tiny" => 150L * 1024 * 1024,
+                "base" => 250L * 1024 * 1024,
+                "small" => 488L * 1024 * 1024,
+                "medium" => 1500L * 1024 * 1024,
+                "large-v3" => 3100L * 1024 * 1024,
+                "turbo" => 4300L * 1024 * 1024,
+                _ => 0
+            };
+        }
+
         return name switch
         {
             "tiny" => 41L * 1024 * 1024,
@@ -668,26 +722,6 @@ public sealed class UIBridge : IDisposable
             "medium" => 769L * 1024 * 1024,
             "large-v3" => 1540L * 1024 * 1024,
             "turbo" => 809L * 1024 * 1024,
-            _ => 0
-        };
-    }
-
-    private long GetGpuModelSize(string name, bool downloaded)
-    {
-        if (downloaded)
-        {
-            string dir = Path.Combine(RuntimePaths.RuntimeRoot, "models", $"sherpa-onnx-whisper-{name}");
-            long size = GetDirectorySize(dir);
-            if (size > 0) return size;
-        }
-        return name switch
-        {
-            "tiny" => 151L * 1024 * 1024,
-            "base" => 256L * 1024 * 1024,
-            "small" => 716L * 1024 * 1024,
-            "medium" => 1480L * 1024 * 1024,
-            "large-v3" => 3090L * 1024 * 1024,
-            "turbo" => 4470L * 1024 * 1024,
             _ => 0
         };
     }
@@ -708,8 +742,8 @@ public sealed class UIBridge : IDisposable
         string providerLabel = provider switch
         {
             "cpu" => "CPU",
-            "cuda" => "GPU \u2014 CUDA",
-            "dml" => "GPU \u2014 DirectML",
+            "cuda" => "GPU (CUDA)",
+            "dml" => "GPU (DirectML)",
             _ => provider
         };
 
@@ -722,7 +756,7 @@ public sealed class UIBridge : IDisposable
         string detectedProvider = _gpuCache;
         var models = new List<object>();
 
-        // CPU models — always shown
+        // Base models — always shown as CPU
         foreach (var name in AllModelNames)
         {
             string composite = $"{name}-cpu";
@@ -731,25 +765,25 @@ public sealed class UIBridge : IDisposable
             {
                 name = composite,
                 displayName = GetDisplayName(name, "cpu"),
-                size = GetCpuModelSize(name, downloaded),
+                size = GetModelSize(name, "cpu", downloaded),
                 downloaded,
                 loaded = name == _loadedModel && _loadedDevice == "cpu" && _modelLoaded,
                 provider = "cpu"
             });
         }
 
-        // CUDA models — shown if CUDA detected
+        // CUDA models — shown if CUDA GPU detected
         if (detectedProvider == "cuda")
         {
             foreach (var name in AllModelNames)
             {
+                bool downloaded = _whisper.IsModelDownloaded("cuda", name);
                 string composite = $"{name}-cuda";
-                bool downloaded = _whisper.IsModelDownloaded("cuda", name) || _whisper.IsModelDownloaded("dml", name);
                 models.Add(new
                 {
                     name = composite,
                     displayName = GetDisplayName(name, "cuda"),
-                    size = GetGpuModelSize(name, downloaded),
+                    size = GetModelSize(name, "cuda", downloaded),
                     downloaded,
                     loaded = name == _loadedModel && _loadedDevice == "cuda" && _modelLoaded,
                     provider = "cuda"
@@ -757,18 +791,18 @@ public sealed class UIBridge : IDisposable
             }
         }
 
-        // DML models — shown if DML or CUDA detected (CUDA users can use DML models too)
-        if (detectedProvider is "dml" or "cuda")
+        // DML models — shown if DirectML GPU detected
+        if (detectedProvider == "dml")
         {
             foreach (var name in AllModelNames)
             {
+                bool downloaded = _whisper.IsModelDownloaded("dml", name);
                 string composite = $"{name}-dml";
-                bool downloaded = _whisper.IsModelDownloaded("dml", name) || _whisper.IsModelDownloaded("cuda", name);
                 models.Add(new
                 {
                     name = composite,
                     displayName = GetDisplayName(name, "dml"),
-                    size = GetGpuModelSize(name, downloaded),
+                    size = GetModelSize(name, "dml", downloaded),
                     downloaded,
                     loaded = name == _loadedModel && _loadedDevice == "dml" && _modelLoaded,
                     provider = "dml"
@@ -803,6 +837,7 @@ public sealed class UIBridge : IDisposable
         }
         catch (Exception ex)
         {
+            _sfx.PlayError();
             SetModelError(ex.Message);
             Post(new { type = "log", message = $"Model load failed: {ex.Message}" });
             Post(new { type = "status_update", text = "Model load failed", variant = "error" });
@@ -831,6 +866,8 @@ public sealed class UIBridge : IDisposable
             return;
         }
 
+        _sfx.PlayTranscriptionDone();
+
         string preview = text.Length > 60 ? text[..60] : text;
         Post(new { type = "log", message = $"Transcribed: {preview}" });
 
@@ -852,10 +889,11 @@ public sealed class UIBridge : IDisposable
     {
         var (model, device) = SttRuntimeOptions.FromCompositeName(compositeName);
 
-        if (device is "cuda" or "dml")
-        {
-            return new SttRuntimeOptions(model, device, "float16", 4, 1, 1) { Provider = device };
-        }
+        if (device == "cuda")
+            return new SttRuntimeOptions(model, "cuda", "float16", 4, 1, 1) { Provider = "cuda" };
+
+        if (device == "dml")
+            return new SttRuntimeOptions(model, "dml", "float16", 4, 1, 1) { Provider = "dml" };
 
         int beam = GetRecommendedBeamSize(model);
         return new SttRuntimeOptions(model, "cpu", "int8", 6, 1, beam) { Provider = "cpu" };

@@ -21,7 +21,7 @@ public sealed class RuntimeSetupService
         var gpu = new GpuDetectionService();
         var (provider, _) = gpu.Detect();
         string imports = provider is "cuda" or "dml"
-            ? "import faster_whisper; import requests; import onnxruntime; import librosa; import soundfile"
+            ? "import faster_whisper; import requests; import soundfile; import onnxruntime"
             : "import faster_whisper; import requests; import soundfile";
 
         string code = $"import sys; {imports}";
@@ -92,21 +92,15 @@ public sealed class RuntimeSetupService
         }
 
         // Step 3b: GPU packages
-        var gpu = new GpuDetectionService();
-        var (provider, gpuName) = gpu.Detect();
-        string gpuPackage = provider switch
+        var gpuInfo = new GpuDetectionService();
+        var (gpuProvider, gpuCard) = gpuInfo.Detect();
+        if (steps[2].Status != "error" && gpuProvider is "cuda" or "dml")
         {
-            "cuda" => "onnxruntime-gpu>=1.20.0",
-            "dml" => "onnxruntime-directml>=1.24.0",
-            _ => ""
-        };
-
-        if (!string.IsNullOrEmpty(gpuPackage))
-        {
-            int gpuPipResult = await RunSilentAsync(venvPython, $"-m pip install \"{gpuPackage}\" \"librosa>=0.10.0\"", null, 180000, ct);
+            string gpuRequirementsPath = ResolveGpuRequirementsPath();
+            int gpuPipResult = await RunSilentAsync(venvPython, $"-m pip install -r \"{gpuRequirementsPath}\"", null, 180000, ct);
             if (gpuPipResult != 0)
             {
-                steps[2] = steps[2] with { Status = "error", Error = $"GPU package '{gpuPackage}' and librosa install failed (exit code {gpuPipResult}). GPU acceleration disabled." };
+                steps[2] = steps[2] with { Status = "error", Error = $"GPU package install failed (exit code {gpuPipResult}). GPU acceleration disabled." };
                 Emit();
             }
         }
@@ -122,7 +116,7 @@ public sealed class RuntimeSetupService
         steps[3] = steps[3] with { Status = "running" };
         Emit();
 
-        string label = gpuName;
+        string label = gpuCard;
         if (!string.IsNullOrEmpty(label))
         {
             steps[3] = steps[3] with { Status = "done", Label = $"GPU: {label}" };
@@ -186,6 +180,18 @@ public sealed class RuntimeSetupService
 
         return candidates.FirstOrDefault(File.Exists)
                ?? throw new FileNotFoundException("Could not find stt_engine\\requirements.txt.");
+    }
+
+    private static string ResolveGpuRequirementsPath()
+    {
+        string[] candidates =
+        {
+            Path.Combine(AppContext.BaseDirectory, "stt_engine", "requirements_gpu.txt"),
+            Path.Combine(Environment.CurrentDirectory, "stt_engine", "requirements_gpu.txt")
+        };
+
+        return candidates.FirstOrDefault(File.Exists)
+               ?? throw new FileNotFoundException("Could not find stt_engine\\requirements_gpu.txt.");
     }
 
     private static string FindProjectVenvPython()

@@ -2,7 +2,6 @@ import React, { useState } from 'react';
 import { Keyboard } from 'lucide-react';
 import { Switch } from '../../components/ui/Switch';
 import { Select } from '../../components/ui/Select';
-import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 import { SettingRow, SettingSection } from '../../components/ui/SettingRow';
 import { ChordPicker } from '../../components/ui/ChordPicker';
@@ -12,8 +11,7 @@ import { defaultChordKeys, displayLabelForKey } from '../../lib/utils/keyCodes';
 
 export function CapturesPage() {
   const store = useStore();
-  const [autoPaste, setAutoPaste] = useState(false);
-  const [pushToTalk, setPushToTalk] = useState(false);
+  const [autoPaste, setAutoPaste] = useState(true);
   const [hotkeyOpen, setHotkeyOpen] = useState(false);
   const [hotkey, setHotkey] = useState<string[]>([]);
 
@@ -27,12 +25,7 @@ export function CapturesPage() {
     send({ type: 'set_setting', key: 'auto_paste', value: checked });
   };
 
-  const handlePushToTalk = (checked: boolean) => {
-    setPushToTalk(checked);
-    send({ type: 'set_setting', key: 'push_to_talk', value: checked });
-  };
-
-  const hotkeyToShow = hotkey.length > 0 ? hotkey : defaultChordKeys(pushToTalk ? 'push' : 'toggle');
+  const hotkeyToShow = hotkey.length > 0 ? hotkey : defaultChordKeys();
   const hotkeyLabel = hotkeyToShow.map(displayLabelForKey).join(' + ');
 
   const downloadedModels = store.availableModels
@@ -51,11 +44,6 @@ export function CapturesPage() {
               <span className="text-xs font-mono">{hotkeyLabel}</span>
             </Button>
           }
-        />
-        <SettingRow
-          title="Push-to-talk"
-          description="Hold the shortcut while speaking, release to transcribe"
-          action={<Switch checked={pushToTalk} onCheckedChange={handlePushToTalk} />}
         />
         <SettingRow
           title="Auto-paste"
@@ -84,7 +72,6 @@ export function CapturesPage() {
         onOpenChange={setHotkeyOpen}
         onChord={handleHotkeyChange}
         initialKeys={hotkey}
-        mode={pushToTalk ? 'push' : 'toggle'}
       />
     </div>
   );

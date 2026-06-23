@@ -9,21 +9,20 @@ interface ChordPickerProps {
   onOpenChange: (open: boolean) => void;
   onChord: (keys: string[]) => void;
   initialKeys?: string[];
-  mode?: 'push' | 'toggle';
 }
 
-export function ChordPicker({ open, onOpenChange, onChord, initialKeys, mode = 'toggle' }: ChordPickerProps) {
-  const [capturedKeys, setCapturedKeys] = useState<Set<string>>(new Set(initialKeys ?? defaultChordKeys(mode)));
+export function ChordPicker({ open, onOpenChange, onChord, initialKeys }: ChordPickerProps) {
+  const [capturedKeys, setCapturedKeys] = useState<Set<string>>(new Set(initialKeys ?? defaultChordKeys()));
   const [isListening, setIsListening] = useState(false);
   const surfaceRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (open) {
-      setCapturedKeys(new Set(initialKeys ?? defaultChordKeys(mode)));
+      setCapturedKeys(new Set(initialKeys ?? defaultChordKeys()));
       setIsListening(true);
       setTimeout(() => surfaceRef.current?.focus(), 50);
     }
-  }, [open, initialKeys, mode]);
+  }, [open, initialKeys]);
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
     e.preventDefault();
@@ -64,7 +63,7 @@ export function ChordPicker({ open, onOpenChange, onChord, initialKeys, mode = '
   };
 
   const handleReset = () => {
-    const defaults = defaultChordKeys(mode);
+    const defaults = defaultChordKeys();
     setCapturedKeys(new Set(defaults));
   };
 

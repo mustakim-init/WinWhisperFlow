@@ -25,7 +25,7 @@ public sealed record SttRuntimeOptions(
             return provider switch
             {
                 "cuda" => new("turbo", "cuda", "float16", 4, 1, 1) { Provider = "cuda" },
-                "dml" => new("base", "dml", "float16", 4, 1, 1) { Provider = "dml" },
+                "dml" => new("small", "dml", "float16", 4, 1, 1) { Provider = "dml" },
                 _ => new("small", "cpu", "int8", 6, 1, 1) { Provider = "cpu" }
             };
         }

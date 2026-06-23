@@ -9,17 +9,23 @@ import { useStore } from '../hooks/useStore';
 export function PhoneMicPage() {
   const store = useStore();
   const [qrDataUrl, setQrDataUrl] = useState('');
+  const [qrError, setQrError] = useState('');
   const [logs, setLogs] = useState<string[]>([]);
 
   useEffect(() => {
     if (store.phoneMicUrl && store.phoneMicUrl !== 'Not started') {
       let cancelled = false;
+      setQrError('');
       import('qrcode').then((mod) => {
         const QRCode = mod.default;
         QRCode.toDataURL(store.phoneMicUrl, { margin: 1, color: { dark: '#000000', light: '#ffffff' } }).then((dataUrl: string) => {
           if (!cancelled) setQrDataUrl(dataUrl);
+        }).catch((err: unknown) => {
+          if (!cancelled) setQrError(err instanceof Error ? err.message : 'Failed to generate QR code');
         });
-      }).catch(() => {});
+      }).catch((err: unknown) => {
+        if (!cancelled) setQrError(err instanceof Error ? err.message : 'Failed to load QR library');
+      });
       return () => { cancelled = true; };
     }
   }, [store.phoneMicUrl]);
@@ -81,6 +87,10 @@ export function PhoneMicPage() {
               </Button>
             </div>
           </div>
+
+          {qrError && (
+            <p className="text-xs text-red-500 text-center pt-2">{qrError}</p>
+          )}
 
           {store.phoneMicRunning && qrDataUrl && (
             <motion.div

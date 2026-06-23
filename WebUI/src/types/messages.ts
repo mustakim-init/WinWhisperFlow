@@ -8,6 +8,7 @@ export interface InitMessage {
   device?: string;
   gpuName?: string;
   audioDevices?: string[];
+  audioDeviceIndex?: number;
 }
 
 export interface SetupProgress {

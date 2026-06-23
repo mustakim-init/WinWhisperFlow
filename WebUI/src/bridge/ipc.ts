@@ -11,7 +11,11 @@ export function onMessage(handler: MessageHandler): () => void {
 
 function dispatch(msg: S2CMessage): void {
   for (const handler of messageHandlers) {
-    handler(msg);
+    try {
+      handler(msg);
+    } catch (e: any) {
+      console.error('bridge handler error:', e?.message || e);
+    }
   }
 }
 

@@ -22,6 +22,7 @@ public partial class MainWindow : Window
     private readonly TextInjector _textInjector = new();
     private readonly PhoneMicService _phoneMic = new();
     private readonly TranscriptionHistory _transcriptionHistory = new();
+    private readonly SoundEffectService _sfx = new();
     private UIBridge? _bridge;
     private OverlayManager? _overlay;
     private Forms.NotifyIcon? _notifyIcon;
@@ -97,7 +98,7 @@ public partial class MainWindow : Window
                     WebView, _whisperBridge, _audioCapture, _phoneMic,
                     _textInjector, _hotkeyService, _runtimeSetup,
                     _transcriptionHistory, _startupService, DetectWindowsDarkMode,
-                    _overlay);
+                    _overlay, _sfx);
             };
 
             _hotkeyService.ToggleRequested += async (_, _) =>
@@ -147,15 +148,20 @@ public partial class MainWindow : Window
             DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE_BEFORE_20H1, ref useImmersiveDarkMode, sizeof(int));
     }
 
+    private static readonly object _logLock = new();
+
     private void AppendLog(string message)
     {
         string line = $"[{DateTime.Now:HH:mm:ss}] {message}";
-        try
+        lock (_logLock)
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(RuntimePaths.LogPath)!);
-            File.AppendAllText(RuntimePaths.LogPath, line + Environment.NewLine);
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(RuntimePaths.LogPath)!);
+                File.AppendAllText(RuntimePaths.LogPath, line + Environment.NewLine);
+            }
+            catch (Exception ex) { Debug.WriteLine($"[AppendLog] Failed to write log: {ex.Message}"); }
         }
-        catch (Exception ex) { Debug.WriteLine($"[AppendLog] Failed to write log: {ex.Message}"); }
     }
 
     public void SetStartMinimized()
@@ -201,6 +207,7 @@ public partial class MainWindow : Window
         _hotkeyService.Dispose();
         _bridge?.Dispose();
         _overlay?.Dispose();
+        _sfx.Dispose();
         _whisperBridge.Dispose();
         _audioCapture.Dispose();
         _phoneMic.Dispose();

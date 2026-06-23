@@ -6,6 +6,7 @@ interface AppState {
   device: string;
   gpuName: string;
   audioDevices: string[];
+  audioDeviceIndex: number;
   model: string;
   language: string;
   isListening: boolean;
@@ -43,6 +44,7 @@ let state: AppState = {
   device: 'cpu',
   gpuName: '',
   audioDevices: [],
+  audioDeviceIndex: 0,
   model: 'small-cpu',
   language: 'en',
   isListening: false,
@@ -91,6 +93,7 @@ function set(patch: Partial<AppState>) {
 export function setDevice(d: string) { set({ device: d }); }
 export function setGpuName(n: string) { set({ gpuName: n }); }
 export function setAudioDevices(d: string[]) { set({ audioDevices: d }); }
+export function setAudioDeviceIndex(i: number) { set({ audioDeviceIndex: i }); }
 export function setModel(m: string) { set({ model: m }); }
 export function setLanguage(l: string) { set({ language: l }); }
 export function setIsListening(v: boolean) { set({ isListening: v }); }

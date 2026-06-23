@@ -18,6 +18,8 @@ public sealed class WhisperBridgeService : IDisposable
     private CancellationTokenSource? _loadCts;
     private bool _workerReady;
     private string _reportedDevice = "cpu";
+    private System.Threading.Timer? _healthTimer;
+    private int _healthFailures;
 
     public event EventHandler<ModelDownloadProgressArgs>? DownloadProgress;
 
@@ -38,12 +40,17 @@ public sealed class WhisperBridgeService : IDisposable
             _stderrLines.Clear();
             CancellationToken ct = _loadCts?.Token ?? CancellationToken.None;
 
-            if (_options.Device is "cuda" or "dml")
+            if (_options.Device is "cuda")
+            {
+                string composite = $"{_options.Model}-{_options.Device}";
+                await EnsureCpuModelDownloadedAsync(composite, ct);
+                DownloadProgress?.Invoke(this, new(_options.Model, 1, 1, "done", CompositeName: composite));
+            }
+            else if (_options.Device == "dml")
             {
                 string composite = $"{_options.Model}-{_options.Device}";
                 await EnsureGpuModelDownloadedAsync(composite, ct);
-                ct.ThrowIfCancellationRequested();
-                FireModelDownloaded(_options.Model, composite);
+                DownloadProgress?.Invoke(this, new(_options.Model, 1, 1, "done", CompositeName: composite));
             }
 
             string scriptPath = ResolveWorkerPath();
@@ -71,7 +78,7 @@ public sealed class WhisperBridgeService : IDisposable
             startInfo.Environment["WINWHISPER_NUM_WORKERS"] = _options.NumWorkers.ToString();
             startInfo.Environment["WINWHISPER_BEAM_SIZE"] = _options.BeamSize.ToString();
             startInfo.Environment["WINWHISPER_LANGUAGE"] = "en";
-            startInfo.Environment["WINWHISPER_MODELS_DIR"] = Path.Combine(RuntimePaths.RuntimeRoot, "models");
+            startInfo.Environment["WINWHISPER_MODELS_DIR"] = RuntimePaths.ModelsRoot;
             startInfo.Environment["WINWHISPER_VAD_FILTER"] = _options.VadFilter ? "1" : "0";
             startInfo.Environment["WINWHISPER_VAD_MIN_SILENCE"] = _options.VadMinSilenceDurationMs.ToString();
             startInfo.Environment["WINWHISPER_NO_SPEECH_THRESHOLD"] = _options.NoSpeechThreshold.ToString("F4");
@@ -93,6 +100,8 @@ public sealed class WhisperBridgeService : IDisposable
             };
             _process.BeginErrorReadLine();
             await WaitUntilReadyAsync(ct);
+
+            StartHealthCheck();
         }
         finally
         {
@@ -192,7 +201,6 @@ public sealed class WhisperBridgeService : IDisposable
     public async Task DownloadModelAsync(string compositeName, CancellationToken ct = default)
     {
         var (model, provider) = SttRuntimeOptions.FromCompositeName(compositeName);
-        bool isGpu = provider is "cuda" or "dml";
 
         var dlCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         if (!_activeDownloads.TryAdd(compositeName, dlCts))
@@ -206,45 +214,19 @@ public sealed class WhisperBridgeService : IDisposable
 
         try
         {
-            if (isGpu)
+            try
             {
-                var original = _options;
-                _options = _options with { Model = model, Device = provider };
-
-                try
-                {
+                if (provider == "dml")
                     await EnsureGpuModelDownloadedAsync(compositeName, dlCts.Token);
-                    var modelsDir = Path.Combine(RuntimePaths.RuntimeRoot, "models", $"sherpa-onnx-whisper-{model}");
-                    long totalSize = 0;
-                    if (Directory.Exists(modelsDir))
-                        totalSize = Directory.GetFiles(modelsDir, "*", SearchOption.AllDirectories).Sum(f => new FileInfo(f).Length);
-
-                    DownloadProgress?.Invoke(this, new(model, totalSize, totalSize, "done", CompositeName: compositeName));
-                }
-                catch (Exception ex)
-                {
-                    DeleteModel(compositeName);
-                    string errMsg = ex is OperationCanceledException ? "Download cancelled" : ex.Message;
-                    DownloadProgress?.Invoke(this, new(model, 0, 0, "error", errMsg, CompositeName: compositeName));
-                }
-                finally
-                {
-                    _options = original;
-                }
-            }
-            else
-            {
-                try
-                {
+                else
                     await EnsureCpuModelDownloadedAsync(compositeName, dlCts.Token);
-                    DownloadProgress?.Invoke(this, new(model, 1, 1, "done", CompositeName: compositeName));
-                }
-                catch (Exception ex)
-                {
-                    DeleteModel(compositeName);
-                    string errMsg = ex is OperationCanceledException ? "Download cancelled" : ex.Message;
-                    DownloadProgress?.Invoke(this, new(model, 0, 0, "error", errMsg, CompositeName: compositeName));
-                }
+                DownloadProgress?.Invoke(this, new(model, 1, 1, "done", CompositeName: compositeName));
+            }
+            catch (Exception ex)
+            {
+                DeleteModel(compositeName);
+                string errMsg = ex is OperationCanceledException ? "Download cancelled" : ex.Message;
+                DownloadProgress?.Invoke(this, new(model, 0, 0, "error", errMsg, CompositeName: compositeName));
             }
         }
         finally
@@ -273,110 +255,100 @@ public sealed class WhisperBridgeService : IDisposable
 
     public bool IsModelDownloaded(string provider, string model)
     {
-        if (provider is "cuda" or "dml")
+        return provider switch
         {
-            return GpuModelIsComplete(model);
-        }
+            "dml" => GpuModelIsComplete(model),
+            _ => CpuModelIsComplete(model)
+        };
+    }
 
-        return CpuModelIsComplete(model);
+    public async Task<bool> VerifyGpuModelFilesAsync(string model)
+    {
+        return await Task.Run(() =>
+        {
+            try
+            {
+                string sherpaDir = Path.Combine(RuntimePaths.ModelsRoot, $"sherpa-onnx-whisper-{model}");
+                if (!Directory.Exists(sherpaDir)) return false;
+
+                string prefix = model; // e.g. "turbo"
+                string encoder = Path.Combine(sherpaDir, $"{prefix}-encoder.onnx");
+                string decoder = Path.Combine(sherpaDir, $"{prefix}-decoder.onnx");
+                string tokens = Path.Combine(sherpaDir, $"{prefix}-tokens.txt");
+
+                if (!File.Exists(encoder) || !File.Exists(decoder) || !File.Exists(tokens))
+                {
+                    // Try int8 variant
+                    encoder = Path.Combine(sherpaDir, $"{prefix}-encoder.int8.onnx");
+                    decoder = Path.Combine(sherpaDir, $"{prefix}-decoder.int8.onnx");
+                    if (!File.Exists(encoder) || !File.Exists(decoder) || !File.Exists(tokens))
+                        return false;
+                }
+
+                // Verify encoder/decoder are not empty / corrupt
+                var encInfo = new FileInfo(encoder);
+                var decInfo = new FileInfo(decoder);
+                if (encInfo.Length < 1024 || decInfo.Length < 1024)
+                    return false;
+
+                // Small .onnx shells need external .weights
+                if (encInfo.Length < 10 * 1024 * 1024)
+                {
+                    string encWeights = Path.Combine(sherpaDir, $"{prefix}-encoder.weights");
+                    if (!File.Exists(encWeights) || new FileInfo(encWeights).Length < 1024)
+                        return false;
+                }
+                if (decInfo.Length < 10 * 1024 * 1024)
+                {
+                    string decWeights = Path.Combine(sherpaDir, $"{prefix}-decoder.weights");
+                    if (!File.Exists(decWeights) || new FileInfo(decWeights).Length < 1024)
+                        return false;
+                }
+
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        });
     }
 
     public void DeleteModel(string compositeName)
     {
-        var (model, provider) = SttRuntimeOptions.FromCompositeName(compositeName);
+        var (model, _) = SttRuntimeOptions.FromCompositeName(compositeName);
 
+        // Delete faster-whisper cache (CPU/CUDA)
         try
         {
-            if (provider is "cuda" or "dml")
-            {
-                string modelsDir = Path.Combine(RuntimePaths.RuntimeRoot, "models", $"sherpa-onnx-whisper-{model}");
-                if (Directory.Exists(modelsDir))
-                    Directory.Delete(modelsDir, recursive: true);
-            }
-            else
-            {
-                // CPU model cleanup
-                string cacheDir = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                    ".cache", "huggingface", "hub");
-                string modelDir = $"models--Systran--faster-whisper-{model}";
-                string cpuPath = Path.Combine(cacheDir, modelDir);
-                if (Directory.Exists(cpuPath))
-                    Directory.Delete(cpuPath, recursive: true);
+            string cacheDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                ".cache", "huggingface", "hub");
+            string modelDir = $"models--Systran--faster-whisper-{model}";
+            string userPath = Path.Combine(cacheDir, modelDir);
+            if (Directory.Exists(userPath))
+                Directory.Delete(userPath, recursive: true);
 
-                string altPath = Path.Combine(RuntimePaths.RuntimeRoot, "models", modelDir);
-                if (Directory.Exists(altPath))
-                    Directory.Delete(altPath, recursive: true);
-            }
+            string altPath = Path.Combine(RuntimePaths.ModelsRoot, modelDir);
+            if (Directory.Exists(altPath))
+                Directory.Delete(altPath, recursive: true);
         }
         catch (Exception ex)
         {
-            Debug.WriteLine($"Failed to delete model {compositeName}: {ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// Returns true if GPU model files are corrupt (should be re-downloaded).
-    /// Returns false if files are healthy or don't exist (no action needed).
-    /// </summary>
-    public async Task<bool> VerifyGpuModelFilesAsync(string model)
-    {
-        string modelsDir = Path.Combine(RuntimePaths.RuntimeRoot, "models", $"sherpa-onnx-whisper-{model}");
-        if (!Directory.Exists(modelsDir)) return false;
-
-        string prefix = model;
-        string encoder = Path.Combine(modelsDir, $"{prefix}-encoder.onnx");
-        string decoder = Path.Combine(modelsDir, $"{prefix}-decoder.onnx");
-        string tokens = Path.Combine(modelsDir, $"{prefix}-tokens.txt");
-
-        // Check all required files exist
-        if (!File.Exists(encoder) || !File.Exists(decoder) || !File.Exists(tokens))
-            return true;
-
-        // Check that small .onnx shells have their external .weights files.
-        // Some models (turbo, large-v3) ship thin encoder/decoder <10 MB that
-        // load weights from a corresponding .weights file in the same directory.
-        long encoderSize = new FileInfo(encoder).Length;
-        long decoderSize = new FileInfo(decoder).Length;
-
-        if (encoderSize < 10L * 1024 * 1024)
-        {
-            string encoderWeights = Path.Combine(modelsDir, $"{prefix}-encoder.weights");
-            if (!File.Exists(encoderWeights))
-                return true;
+            Debug.WriteLine($"Failed to delete faster-whisper model {compositeName}: {ex.Message}");
         }
 
-        if (decoderSize < 10L * 1024 * 1024)
+        // Delete sherpa-onnx cache (DML)
+        try
         {
-            string decoderWeights = Path.Combine(modelsDir, $"{prefix}-decoder.weights");
-            if (!File.Exists(decoderWeights))
-                return true;
+            string sherpaDir = Path.Combine(RuntimePaths.ModelsRoot, $"sherpa-onnx-whisper-{model}");
+            if (Directory.Exists(sherpaDir))
+                Directory.Delete(sherpaDir, recursive: true);
         }
-
-        // Self-contained .onnx files (>10 MB): verify against expected minimum per-file sizes.
-        // Models that use external .weights files (shells <10 MB) are checked above.
-        long encoderMin = model switch
+        catch (Exception ex)
         {
-            "tiny" => 20L * 1024 * 1024,
-            "base" => 80L * 1024 * 1024,
-            "small" => 200L * 1024 * 1024,
-            _ => 10L * 1024 * 1024
-        };
-
-        long decoderMin = model switch
-        {
-            "tiny" => 50L * 1024 * 1024,
-            "base" => 170L * 1024 * 1024,
-            "small" => 400L * 1024 * 1024,
-            _ => 10L * 1024 * 1024
-        };
-
-        if (encoderSize >= 10L * 1024 * 1024 && encoderSize < encoderMin)
-            return true;
-        if (decoderSize >= 10L * 1024 * 1024 && decoderSize < decoderMin)
-            return true;
-
-        return false;
+            Debug.WriteLine($"Failed to delete sherpa-onnx model {compositeName}: {ex.Message}");
+        }
     }
 
     public string GetLoadedModel() => _options.Model;
@@ -388,8 +360,7 @@ public sealed class WhisperBridgeService : IDisposable
         var proc = _process;
         if (proc is null) return;
 
-        TimeSpan readyTimeout = _options.Device is "cuda" or "dml"
-            ? TimeSpan.FromMinutes(15) : TimeSpan.FromSeconds(120);
+        TimeSpan readyTimeout = TimeSpan.FromSeconds(120);
 
         string? line;
         try { line = await ReadLineWithTimeoutAsync(proc.StandardOutput, readyTimeout, ct); }
@@ -432,8 +403,6 @@ public sealed class WhisperBridgeService : IDisposable
         {
             if (stderr.Contains("faster_whisper", StringComparison.OrdinalIgnoreCase))
                 return "Python dependency missing (faster_whisper). Run Setup to install packages.";
-            if (stderr.Contains("onnxruntime", StringComparison.OrdinalIgnoreCase))
-                return "GPU Python dependency missing (onnxruntime). Run Setup to install GPU packages.";
             return "Python dependency missing. Run Setup to install packages.";
         }
         if (!string.IsNullOrWhiteSpace(stderr))
@@ -441,172 +410,11 @@ public sealed class WhisperBridgeService : IDisposable
         return fallback;
     }
 
-    private static bool GpuModelIsComplete(string model)
-    {
-        string modelsDir = Path.Combine(RuntimePaths.RuntimeRoot, "models", $"sherpa-onnx-whisper-{model}");
-        string prefix = model;
-
-        if (!Directory.Exists(modelsDir)) return false;
-
-        bool HasFile(string name) => File.Exists(Path.Combine(modelsDir, name));
-
-        // Must have the core files in at least one format
-        bool hasFp32 = HasFile($"{prefix}-encoder.onnx") && HasFile($"{prefix}-decoder.onnx") && HasFile($"{prefix}-tokens.txt");
-        bool hasInt8 = HasFile($"{prefix}-encoder.int8.onnx") && HasFile($"{prefix}-decoder.int8.onnx") && HasFile($"{prefix}-tokens.txt");
-        if (!hasFp32 && !hasInt8) return false;
-
-        // If .onnx files are shells (<10 MB), they need corresponding .weights
-        string encoderPath = Path.Combine(modelsDir, $"{prefix}-encoder.onnx");
-        if (File.Exists(encoderPath) && new FileInfo(encoderPath).Length < 10L * 1024 * 1024)
-        {
-            if (!HasFile($"{prefix}-encoder.weights")) return false;
-        }
-
-        string decoderPath = Path.Combine(modelsDir, $"{prefix}-decoder.onnx");
-        if (File.Exists(decoderPath) && new FileInfo(decoderPath).Length < 10L * 1024 * 1024)
-        {
-            if (!HasFile($"{prefix}-decoder.weights")) return false;
-        }
-
-        return true;
-    }
-
-    private async Task EnsureGpuModelDownloadedAsync(string compositeName, CancellationToken ct = default)
-    {
-        if (GpuModelIsComplete(_options.Model)) return;
-
-        // Delete existing files so the download script doesn't treat partial
-        // downloads (from interrupted sessions) as "cached" and skip them.
-        string cleanDir = Path.Combine(RuntimePaths.RuntimeRoot, "models", $"sherpa-onnx-whisper-{_options.Model}");
-        if (Directory.Exists(cleanDir))
-        {
-            Directory.Delete(cleanDir, recursive: true);
-        }
-
-        ct.ThrowIfCancellationRequested();
-
-        string downloadScript = ResolveDownloadScriptPath();
-        string python = ResolvePython();
-        string persistentModelsDir = Path.Combine(RuntimePaths.RuntimeRoot, "models");
-
-        var psi = new ProcessStartInfo
-        {
-            FileName = python,
-            Arguments = $"-u \"{downloadScript}\" {_options.Model} \"{persistentModelsDir}\"",
-            UseShellExecute = false,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            CreateNoWindow = true,
-            StandardErrorEncoding = new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
-        };
-
-        var process = Process.Start(psi);
-        if (process is null)
-            throw new InvalidOperationException("Failed to start download script.");
-
-        _downloadProcesses[compositeName] = process;
-
-        try
-        {
-            process.OutputDataReceived += (_, _) => { };
-            process.BeginOutputReadLine();
-
-            long totalCompleted = 0;
-            var progressLock = new object();
-            var stderrCapture = new System.Text.StringBuilder();
-
-            process.ErrorDataReceived += (_, args) =>
-            {
-                if (string.IsNullOrWhiteSpace(args.Data))
-                    return;
-                stderrCapture.AppendLine(args.Data);
-                try
-                {
-                    using var doc = JsonDocument.Parse(args.Data);
-                    var root = doc.RootElement;
-                    string type = root.GetProperty("type").GetString() ?? "";
-
-                    if (type == "dl_progress")
-                    {
-                        long downloaded = root.GetProperty("downloaded").GetInt64();
-                        long total = root.GetProperty("total").GetInt64();
-                        double speed = root.TryGetProperty("speed", out var speedProp) ? speedProp.GetDouble() : 0.0;
-                        long cumDown, cumTotal;
-                        lock (progressLock)
-                        {
-                            cumDown = totalCompleted + downloaded;
-                            cumTotal = totalCompleted + max(total, 1);
-                        }
-                        DownloadProgress?.Invoke(this, new(_options.Model, cumDown, cumTotal, "downloading", CompositeName: compositeName, Speed: speed));
-                    }
-                    else if (type == "file_done")
-                    {
-                        long fileSize = root.GetProperty("size").GetInt64();
-                        lock (progressLock)
-                        {
-                            totalCompleted += fileSize;
-                        }
-                        DownloadProgress?.Invoke(this, new(_options.Model, totalCompleted, totalCompleted, "downloading", CompositeName: compositeName));
-                    }
-                    else if (type == "file_cached")
-                    {
-                        // Cached files are already on disk — count their size toward cumulative progress
-                        string? fileName = root.TryGetProperty("file", out var fileProp) ? fileProp.GetString() : null;
-                        if (fileName is not null)
-                        {
-                            string modelsDir = Path.Combine(RuntimePaths.RuntimeRoot, "models", $"sherpa-onnx-whisper-{_options.Model}");
-                            string filePath = Path.Combine(modelsDir, fileName);
-                            if (File.Exists(filePath))
-                            {
-                                long fileSize = new FileInfo(filePath).Length;
-                                lock (progressLock)
-                                {
-                                    totalCompleted += fileSize;
-                                }
-                                DownloadProgress?.Invoke(this, new(_options.Model, totalCompleted, totalCompleted, "downloading", CompositeName: compositeName));
-                            }
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    Debug.WriteLine($"[Download stderr parse] {ex.Message} — raw: {args.Data}");
-                }
-            };
-            process.BeginErrorReadLine();
-
-            try
-            {
-                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-                cts.CancelAfter(TimeSpan.FromMinutes(30));
-                await process.WaitForExitAsync(cts.Token);
-            }
-            catch (OperationCanceledException)
-            {
-                try { process.Kill(entireProcessTree: true); } catch { }
-                throw new InvalidOperationException("Model download was cancelled or timed out.");
-            }
-
-            if (process.ExitCode != 0)
-            {
-                string stderr = stderrCapture.ToString();
-                string detail = stderr.Length > 200 ? stderr[..200] + "..." : stderr;
-                throw new InvalidOperationException($"GPU model download failed. Python said: {detail}");
-            }
-
-        }
-        finally
-        {
-            _downloadProcesses.TryRemove(compositeName, out _);
-            process.Dispose();
-        }
-    }
-
     private static bool CpuModelIsComplete(string model)
     {
         string[] cacheRoots = {
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".cache", "huggingface", "hub"),
-            Path.Combine(RuntimePaths.RuntimeRoot, "models")
+            RuntimePaths.ModelsRoot
         };
 
         foreach (var root in cacheRoots)
@@ -644,7 +452,7 @@ public sealed class WhisperBridgeService : IDisposable
 
         string downloadScript = ResolveCpuDownloadScriptPath();
         string python = ResolvePython();
-        string persistentModelsDir = Path.Combine(RuntimePaths.RuntimeRoot, "models");
+        string persistentModelsDir = RuntimePaths.ModelsRoot;
 
         var psi = new ProcessStartInfo
         {
@@ -698,7 +506,14 @@ public sealed class WhisperBridgeService : IDisposable
 
             try
             {
-                await process.WaitForExitAsync(ct);
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                cts.CancelAfter(TimeSpan.FromMinutes(30));
+                await process.WaitForExitAsync(cts.Token);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                try { process.Kill(entireProcessTree: true); } catch { }
+                throw new InvalidOperationException("CPU model download was cancelled or timed out.");
             }
             catch (OperationCanceledException)
             {
@@ -732,9 +547,158 @@ public sealed class WhisperBridgeService : IDisposable
                ?? throw new FileNotFoundException("Could not find stt_engine\\download_cpu_model.py.");
     }
 
-    private static long max(long a, long b) => a > b ? a : b;
+    private static bool GpuModelIsComplete(string model)
+    {
+        string sherpaDir = Path.Combine(RuntimePaths.ModelsRoot, $"sherpa-onnx-whisper-{model}");
+        if (!Directory.Exists(sherpaDir)) return false;
 
-    private static string ResolveDownloadScriptPath()
+        string prefix = model;
+        string encoder = Path.Combine(sherpaDir, $"{prefix}-encoder.onnx");
+        string decoder = Path.Combine(sherpaDir, $"{prefix}-decoder.onnx");
+        string tokens = Path.Combine(sherpaDir, $"{prefix}-tokens.txt");
+
+        if (File.Exists(encoder) && File.Exists(decoder) && File.Exists(tokens))
+            return true;
+
+        // Try int8 variant
+        encoder = Path.Combine(sherpaDir, $"{prefix}-encoder.int8.onnx");
+        decoder = Path.Combine(sherpaDir, $"{prefix}-decoder.int8.onnx");
+        return File.Exists(encoder) && File.Exists(decoder) && File.Exists(tokens);
+    }
+
+    private async Task EnsureGpuModelDownloadedAsync(string compositeName, CancellationToken ct = default)
+    {
+        var (model, _) = SttRuntimeOptions.FromCompositeName(compositeName);
+        if (GpuModelIsComplete(model)) return;
+
+        // Clean partial downloads from interrupted sessions
+        string cleanDir = Path.Combine(RuntimePaths.ModelsRoot, $"sherpa-onnx-whisper-{model}");
+        if (Directory.Exists(cleanDir))
+            Directory.Delete(cleanDir, recursive: true);
+
+        ct.ThrowIfCancellationRequested();
+
+        string downloadScript = ResolveGpuDownloadScriptPath();
+        string python = ResolvePython();
+        string modelsDir = RuntimePaths.ModelsRoot;
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = python,
+            Arguments = $"-u \"{downloadScript}\" {model} \"{modelsDir}\"",
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+            StandardErrorEncoding = new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+        };
+
+        var process = Process.Start(psi);
+        if (process is null)
+            throw new InvalidOperationException("Failed to start GPU download script.");
+
+        _downloadProcesses[compositeName] = process;
+
+        try
+        {
+            process.OutputDataReceived += (_, _) => { };
+            process.BeginOutputReadLine();
+
+            long totalCompleted = 0;
+            var progressLock = new object();
+            var stderrCapture = new System.Text.StringBuilder();
+
+            process.ErrorDataReceived += (_, args) =>
+            {
+                if (string.IsNullOrWhiteSpace(args.Data))
+                    return;
+                stderrCapture.AppendLine(args.Data);
+                try
+                {
+                    using var doc = JsonDocument.Parse(args.Data);
+                    var root = doc.RootElement;
+                    string type = root.GetProperty("type").GetString() ?? "";
+
+                    if (type == "dl_progress")
+                    {
+                        long downloaded = root.GetProperty("downloaded").GetInt64();
+                        long total = root.GetProperty("total").GetInt64();
+                        double speed = root.TryGetProperty("speed", out var speedProp) ? speedProp.GetDouble() : 0.0;
+                        long cumDown, cumTotal;
+                        lock (progressLock)
+                        {
+                            cumDown = totalCompleted + downloaded;
+                            cumTotal = totalCompleted + Math.Max(total, 1);
+                        }
+                        DownloadProgress?.Invoke(this, new(model, cumDown, cumTotal, "downloading", CompositeName: compositeName, Speed: speed));
+                    }
+                    else if (type == "file_done")
+                    {
+                        long fileSize = root.GetProperty("size").GetInt64();
+                        lock (progressLock)
+                        {
+                            totalCompleted += fileSize;
+                        }
+                        DownloadProgress?.Invoke(this, new(model, totalCompleted, totalCompleted, "downloading", CompositeName: compositeName));
+                    }
+                    else if (type == "file_cached")
+                    {
+                        string? fileName = root.TryGetProperty("file", out var fileProp) ? fileProp.GetString() : null;
+                        if (fileName is not null)
+                        {
+            string sherpaDir = Path.Combine(RuntimePaths.ModelsRoot, $"sherpa-onnx-whisper-{model}");
+                            string filePath = Path.Combine(sherpaDir, fileName);
+                            if (File.Exists(filePath))
+                            {
+                                long fileSize = new FileInfo(filePath).Length;
+                                lock (progressLock)
+                                {
+                                    totalCompleted += fileSize;
+                                }
+                                DownloadProgress?.Invoke(this, new(model, totalCompleted, totalCompleted, "downloading", CompositeName: compositeName));
+                            }
+                        }
+                    }
+                }
+                catch
+                {
+                    // stderr lines that aren't JSON are just script output
+                }
+            };
+            process.BeginErrorReadLine();
+
+            try
+            {
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                cts.CancelAfter(TimeSpan.FromMinutes(30));
+                await process.WaitForExitAsync(cts.Token);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                try { process.Kill(entireProcessTree: true); } catch { }
+                throw new InvalidOperationException("GPU model download was cancelled or timed out.");
+            }
+            catch (OperationCanceledException)
+            {
+                try { process.Kill(entireProcessTree: true); } catch { }
+                throw;
+            }
+
+            if (process.ExitCode != 0)
+            {
+                string stderr = stderrCapture.ToString();
+                string detail = stderr.Length > 200 ? stderr[..200] + "..." : stderr;
+                throw new InvalidOperationException($"GPU model download failed. Python said: {detail}");
+            }
+        }
+        finally
+        {
+            _downloadProcesses.TryRemove(compositeName, out _);
+            process.Dispose();
+        }
+    }
+
+    private static string ResolveGpuDownloadScriptPath()
     {
         string[] candidates =
         {
@@ -759,6 +723,43 @@ public sealed class WhisperBridgeService : IDisposable
             ?? throw new FileNotFoundException("Python interpreter not found. Run setup first.");
     }
 
+    private void StartHealthCheck()
+    {
+        StopHealthCheck();
+        var ct = _loadCts?.Token ?? CancellationToken.None;
+        _healthFailures = 0;
+        _healthTimer = new System.Threading.Timer(_ =>
+        {
+            try
+            {
+                if (ct.IsCancellationRequested) { StopHealthCheck(); return; }
+                var proc = _process;
+                if (proc is null || proc.HasExited)
+                {
+                    _healthFailures++;
+                    if (_healthFailures >= 2)
+                    {
+                        _workerReady = false;
+                        Debug.WriteLine("[HealthCheck] Worker died. Will restart on next request.");
+                        StopHealthCheck();
+                    }
+                    return;
+                }
+                _healthFailures = 0;
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"[HealthCheck] Error: {ex.Message}");
+            }
+        }, null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
+    }
+
+    private void StopHealthCheck()
+    {
+        using var old = Interlocked.Exchange(ref _healthTimer, null);
+        old?.Dispose();
+    }
+
     private string ResolveWorkerPath()
     {
         string workerName = _options.Device is "cuda" or "dml" ? "whisper_worker_gpu" : "whisper_worker";
@@ -772,15 +773,6 @@ public sealed class WhisperBridgeService : IDisposable
 
         return candidates.FirstOrDefault(File.Exists)
                ?? throw new FileNotFoundException($"Could not find stt_engine executable or script for {workerName}.");
-    }
-
-    private void FireModelDownloaded(string model, string composite)
-    {
-        string modelsDir = Path.Combine(RuntimePaths.RuntimeRoot, "models", $"sherpa-onnx-whisper-{model}");
-        long totalSize = 0;
-        if (Directory.Exists(modelsDir))
-            totalSize = Directory.GetFiles(modelsDir, "*", SearchOption.AllDirectories).Sum(f => new FileInfo(f).Length);
-        DownloadProgress?.Invoke(this, new(model, totalSize, totalSize, "done", CompositeName: composite));
     }
 
     private static string NormalizeDevice(string device) => device switch
@@ -837,6 +829,8 @@ public sealed class WhisperBridgeService : IDisposable
 
     public void Dispose()
     {
+        StopHealthCheck();
+
         // Cancel all active downloads
         foreach (var kvp in _activeDownloads)
         {
@@ -873,6 +867,7 @@ public sealed class WhisperBridgeService : IDisposable
 
     private void KillWorker()
     {
+        StopHealthCheck();
         try
         {
             if (_process is { HasExited: false })

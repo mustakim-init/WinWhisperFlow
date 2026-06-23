@@ -1,14 +1,11 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-
-from PyInstaller.utils.hooks import collect_submodules
-
 a = Analysis(
     ['stt_engine\\whisper_worker_gpu.py'],
     pathex=[],
     binaries=[],
     datas=[],
-    hiddenimports=['librosa', 'soundfile', 'numpy', 'onnxruntime', 'base64', 'math', 'struct', 'scipy._external.array_api_compat.numpy.fft'] + collect_submodules('scipy') + collect_submodules('librosa') + collect_submodules('soundfile'),
+    hiddenimports=['onnxruntime', 'scipy', 'librosa'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

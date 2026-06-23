@@ -22,6 +22,7 @@ export function GeneralPage() {
   const darkMode = useUiStore((s) => s.darkMode);
   const setDarkMode = useUiStore((s) => s.setDarkMode);
   const [startOnBoot, setStartOnBoot] = useState(false);
+  const [sfxEnabled, setSfxEnabled] = useState(true);
   const [theme, setTheme] = useState('dark');
 
   const handleDarkMode = (checked: boolean) => {
@@ -35,10 +36,20 @@ export function GeneralPage() {
     send({ type: 'set_setting', key: 'start_on_boot', value: checked });
   };
 
+  const handleSfxToggle = (checked: boolean) => {
+    setSfxEnabled(checked);
+    send({ type: 'set_setting', key: 'sfx', value: checked });
+  };
+
   const handleThemeChange = (v: string) => {
     setTheme(v);
-    if (v === 'dark' || v === 'light') {
-      setDarkMode(v === 'dark');
+    if (v === 'dark') {
+      setDarkMode(true);
+    } else if (v === 'light') {
+      setDarkMode(false);
+    } else {
+      const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+      setDarkMode(prefersDark);
     }
     send({ type: 'set_setting', key: 'theme', value: v });
   };
@@ -131,6 +142,11 @@ export function GeneralPage() {
           title="Start on boot"
           description="Launch WinWhisper Flow when you sign in"
           action={<Switch checked={startOnBoot} onCheckedChange={handleStartOnBoot} />}
+        />
+        <SettingRow
+          title="Sound effects"
+          description="Play sounds on record, transcribe, and errors"
+          action={<Switch checked={sfxEnabled} onCheckedChange={handleSfxToggle} />}
         />
       </SettingSection>
     </div>
