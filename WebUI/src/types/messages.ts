@@ -66,6 +66,7 @@ export type S2CMessage =
   | { type: 'history_entry'; entry: HistoryEntry }
   | { type: 'notification'; title: string; message: string; variant: 'info' | 'warning' | 'error' }
   | { type: 'settings'; settings: Record<string, unknown> }
+  | { type: 'clear_history' }
   | { type: 'directory_picked'; path: string | null };
 
 export interface HistoryEntry {
@@ -92,4 +93,5 @@ export type C2SMessage =
   | { type: 'setup_runtime' }
   | { type: 'delete_history_entry'; ts: string; text: string }
   | { type: 'pick_directory'; purpose: string }
-  | { type: 'open_directory'; path: string };
+  | { type: 'open_directory'; path: string }
+  | { type: 'open_url'; url: string };

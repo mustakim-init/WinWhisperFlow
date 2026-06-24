@@ -90,7 +90,7 @@ interface ListPaneScrollProps {
 export function ListPaneScroll({ className, style, children }: ListPaneScrollProps) {
   return (
     <div
-      className={cn('flex-1 overflow-y-auto overflow-x-hidden pt-24', className)}
+      className={cn('flex-1 overflow-y-auto overflow-x-hidden pt-28', className)}
       style={style}
     >
       {children}

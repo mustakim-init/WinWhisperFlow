@@ -138,26 +138,49 @@ def download_fp32_model(model_name, models_dir):
     print(f"Save to: {model_dir}")
     print()
 
+    def _get_expected_size(url):
+        try:
+            req = urllib.request.Request(url, method='HEAD')
+            resp = urllib.request.urlopen(req, timeout=10)
+            cl = resp.headers.get('Content-Length')
+            return int(cl) if cl else None
+        except Exception:
+            return None
+
     def _download_file(fname, dest):
-        # Only use cache if the file exists AND is larger than a reasonable minimum.
-        # This prevents truncated partial downloads from being silently skipped.
-        suffix = fname.split("-", 1)[-1]
-        min_size_for_cache = {
-            "encoder.onnx": 10 * 1024 * 1024,
-            "decoder.onnx": 10 * 1024 * 1024,
-        }.get(suffix, 1)
-        if dest.exists() and dest.stat().st_size >= min_size_for_cache:
-            size_mb = dest.stat().st_size / 1024 / 1024
-            print(f"  [cached] {fname} ({size_mb:.1f} MB)")
-            sys.stderr.write(json.dumps({"type": "file_cached", "file": fname}) + "\n")
-            sys.stderr.flush()
-            return True
+        url = f"{base_url}/{fname}"
+        expected = _get_expected_size(url)
+
+        if dest.exists():
+            local_size = dest.stat().st_size
+            if expected is not None:
+                if local_size >= expected:
+                    size_mb = local_size / 1024 / 1024
+                    print(f"  [cached] {fname} ({size_mb:.1f} MB)")
+                    sys.stderr.write(json.dumps({"type": "file_cached", "file": fname}) + "\n")
+                    sys.stderr.flush()
+                    return True
+                print(f"  [truncated] {fname} (local {local_size/1024/1024:.1f} MB vs expected {expected/1024/1024:.1f} MB — re-downloading)")
+                dest.unlink()
+            else:
+                suffix = fname.split("-", 1)[-1]
+                min_size_for_cache = {
+                    "encoder.onnx": 50 * 1024 * 1024,
+                    "decoder.onnx": 100 * 1024 * 1024,
+                }.get(suffix, 1)
+                if local_size >= min_size_for_cache:
+                    size_mb = local_size / 1024 / 1024
+                    print(f"  [cached] {fname} ({size_mb:.1f} MB)")
+                    sys.stderr.write(json.dumps({"type": "file_cached", "file": fname}) + "\n")
+                    sys.stderr.flush()
+                    return True
+                print(f"  [truncated] {fname} (local {local_size/1024/1024:.1f} MB — re-downloading)")
+                dest.unlink()
 
         print(f"  Downloading {fname}...")
         sys.stderr.write(json.dumps({"type": "file_start", "file": fname}) + "\n")
         sys.stderr.flush()
 
-        url = f"{base_url}/{fname}"
         hook = make_progress_hook(fname)
         try:
             urlretrieve_with_retry(url, str(dest), reporthook=hook)
@@ -214,7 +237,6 @@ def main():
     if len(sys.argv) < 2:
         print("Usage: download_gpu_model.py <model_name> [models_dir]")
         print(f"Supported: {', '.join(SHERPA_MODEL_MAP)}")
-        input("\nPress Enter to close...")
         sys.exit(1)
 
     model_name = sys.argv[1]
@@ -235,7 +257,6 @@ def main():
     except Exception as exc:
         print()
         print(f"ERROR: {exc}")
-        input("\nPress Enter to close...")
         sys.exit(1)
 
 

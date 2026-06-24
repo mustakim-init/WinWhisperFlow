@@ -41,6 +41,7 @@ public sealed class UIBridge : IDisposable
     private readonly EventHandler<float> _onAudioLevel;
     private readonly EventHandler<(string WavPath, TaskCompletionSource<string> Result)> _onPhoneMicAudio;
     private readonly EventHandler<string> _onPhoneMicLog;
+    private readonly EventHandler<bool> _onPhoneMicRecording;
     private readonly EventHandler<WhisperBridgeService.ModelDownloadProgressArgs> _onDownloadProgress;
     private readonly EventHandler<IReadOnlyList<RuntimeSetupService.SetupStep>> _onSetupSteps;
 
@@ -79,11 +80,14 @@ public sealed class UIBridge : IDisposable
 
         _onPhoneMicAudio = async (_, e) =>
         {
+            _overlay?.ShowTranscribing();
+            Post(new { type = "status_update", text = "Transcribing phone audio\u2026", variant = "warning" });
             try
             {
                 var result = await _whisper.TranscribeAsync(e.WavPath, GetSelectedLanguage());
                 string text = result.Text.Trim();
                 await PublishTranscriptionAsync(text, result.Language, result.LanguageProbability, "phone");
+                Post(new { type = "status_update", text = "Ready", variant = "success" });
                 e.Result.TrySetResult(text);
             }
             catch (Exception ex)
@@ -97,6 +101,22 @@ public sealed class UIBridge : IDisposable
         _onPhoneMicLog = (_, msg) =>
             Post(new { type = "log", message = msg });
         _phoneMic.LogMessage += _onPhoneMicLog;
+
+        _onPhoneMicRecording = (_, recording) =>
+        {
+            if (recording)
+            {
+                _overlay?.ShowListening();
+                Post(new { type = "listening_status", listening = true, source = "phone" });
+                Post(new { type = "status_update", text = "Phone recording\u2026", variant = "warning" });
+            }
+            else
+            {
+                _overlay?.Hide();
+                Post(new { type = "listening_status", listening = false });
+            }
+        };
+        _phoneMic.RecordingChanged += _onPhoneMicRecording;
 
         _onDownloadProgress = (_, args) =>
         {
@@ -178,6 +198,13 @@ public sealed class UIBridge : IDisposable
             return Task.CompletedTask;
         }
 
+        if (_phoneMic.IsPhoneRecording)
+        {
+            Post(new { type = "log", message = "Phone mic is recording — stop it before using desktop mic" });
+            Post(new { type = "notification", title = "Phone mic active", message = "Stop phone recording first to use the desktop mic.", variant = "warning" });
+            return Task.CompletedTask;
+        }
+
         if (!_modelLoaded)
         {
             Post(new { type = "log", message = "Model not loaded yet" });
@@ -218,6 +245,7 @@ public sealed class UIBridge : IDisposable
         {
             var result = await _whisper.TranscribeAsync(path, GetSelectedLanguage());
             await PublishTranscriptionAsync(result.Text.Trim(), result.Language, result.LanguageProbability, "mic", inject: _autoPasteEnabled, isPartial: false);
+            Post(new { type = "status_update", text = "Ready", variant = "success" });
         }
         catch (Exception ex)
         {
@@ -229,7 +257,6 @@ public sealed class UIBridge : IDisposable
         finally
         {
             try { File.Delete(path); } catch { }
-            Post(new { type = "status_update", text = "Ready", variant = "success" });
         }
     }
 
@@ -317,28 +344,44 @@ public sealed class UIBridge : IDisposable
                 case "set_setting":
                 {
                     string settingKey = GetStringProp(root, "key");
-                    if (settingKey == "startup")
+                    if (settingKey == "start_on_boot")
                     {
                         if (root.TryGetProperty("value", out var startupVal))
+                        {
                             _startup.SetEnabled(startupVal.GetBoolean());
+                            SettingsStore.StartOnBoot = startupVal.GetBoolean();
+                            SettingsStore.Save();
+                        }
                     }
                     else if (settingKey == "audio_device")
                     {
                         if (root.TryGetProperty("value", out var audioVal))
+                        {
                             _audio.DeviceId = audioVal.GetInt32();
+                            SettingsStore.AudioDeviceId = audioVal.GetInt32();
+                            SettingsStore.Save();
+                        }
                     }
                     else if (settingKey == "sfx")
                     {
                         if (root.TryGetProperty("value", out var sfxVal))
+                        {
                             _sfx.Enabled = sfxVal.GetBoolean();
+                            SettingsStore.SoundEffectsEnabled = sfxVal.GetBoolean();
+                            SettingsStore.Save();
+                        }
                     }
                     else if (settingKey == "language")
                     {
                         _selectedLanguage = GetStringProp(root, "value", "en");
+                        SettingsStore.Language = _selectedLanguage;
+                        SettingsStore.Save();
                     }
                     else if (settingKey == "theme")
                     {
                         string theme = GetStringProp(root, "value", "dark");
+                        SettingsStore.Theme = theme;
+                        SettingsStore.Save();
                         Post(new { type = "log", message = $"Theme set to {theme}" });
                     }
                     else if (settingKey == "hotkey_chord")
@@ -358,11 +401,27 @@ public sealed class UIBridge : IDisposable
                             if (vkCodes.Count > 0)
                                 _hotkey.UpdateChord(vkCodes);
                         }
+                        // Persist as comma-separated string
+                        var keys = new List<string>();
+                        if (root.TryGetProperty("value", out var chordArr) && chordArr.ValueKind == JsonValueKind.Array)
+                        {
+                            foreach (var item in chordArr.EnumerateArray())
+                            {
+                                string? k = item.GetString();
+                                if (k is not null) keys.Add(k);
+                            }
+                        }
+                        SettingsStore.HotkeyChord = string.Join(",", keys);
+                        SettingsStore.Save();
                     }
                     else if (settingKey == "auto_paste")
                     {
                         if (root.TryGetProperty("value", out var pasteVal))
+                        {
                             _autoPasteEnabled = pasteVal.GetBoolean();
+                            SettingsStore.AutoPasteEnabled = pasteVal.GetBoolean();
+                            SettingsStore.Save();
+                        }
                         Post(new { type = "log", message = $"Auto-paste set to {_autoPasteEnabled}" });
                     }
                     else if (settingKey == "model_dir")
@@ -371,13 +430,16 @@ public sealed class UIBridge : IDisposable
                         if (!string.IsNullOrEmpty(dir) && Directory.Exists(dir))
                         {
                             RuntimePaths.ModelsRoot = dir;
+                            SettingsStore.ModelDirectory = dir;
                             Post(new { type = "log", message = $"Model directory changed to {dir}" });
                         }
                         else
                         {
                             RuntimePaths.ModelsRoot = "";
+                            SettingsStore.ModelDirectory = null;
                             Post(new { type = "log", message = "Model directory reset to default" });
                         }
+                        SettingsStore.Save();
                     }
                     break;
                 }
@@ -421,6 +483,17 @@ public sealed class UIBridge : IDisposable
                             Post(new { type = "directory_picked", path = (string?)null });
                         }
                     });
+                    break;
+                }
+
+                case "open_url":
+                {
+                    string url = GetStringProp(root, "url");
+                    if (!string.IsNullOrEmpty(url))
+                    {
+                        try { Process.Start(new ProcessStartInfo(url) { UseShellExecute = true }); }
+                        catch (Exception ex) { Post(new { type = "log", message = $"Open URL error: {ex.Message}" }); }
+                    }
                     break;
                 }
 
@@ -547,6 +620,16 @@ public sealed class UIBridge : IDisposable
 
     private async Task RunHealthCheckAsync()
     {
+        // Load persisted settings
+        SettingsStore.Load();
+        if (!string.IsNullOrEmpty(SettingsStore.ModelDirectory))
+            RuntimePaths.ModelsRoot = SettingsStore.ModelDirectory;
+        _selectedLanguage = SettingsStore.Language;
+        _autoPasteEnabled = SettingsStore.AutoPasteEnabled;
+        _sfx.Enabled = SettingsStore.SoundEffectsEnabled;
+        _audio.DeviceId = SettingsStore.AudioDeviceId;
+        if (SettingsStore.StartOnBoot) _startup.SetEnabled(true);
+
         try
         {
             bool ready = await _runtimeSetup.IsReadyAsync();
@@ -565,7 +648,14 @@ public sealed class UIBridge : IDisposable
 
             // Unblock UI immediately — setup succeeded
             Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, loaded = false, model = GetCompositeName(), device = _loadedDevice, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId });
-            Post(new { type = "settings", settings = new { startup = _startup.IsEnabled(), language = _selectedLanguage } });
+            Post(new { type = "settings", settings = new {
+                startup = _startup.IsEnabled(),
+                language = _selectedLanguage,
+                sfx = _sfx.Enabled,
+                auto_paste = _autoPasteEnabled,
+                theme = SettingsStore.Theme,
+                audio_device = _audio.DeviceId,
+            } });
 
             var recommended = SttRuntimeOptions.RecommendedForThisPc;
             Post(new { type = "log", message = $"Detected GPU: {recommended.Provider}. Recommended model: {recommended.Model}" });
@@ -618,7 +708,15 @@ public sealed class UIBridge : IDisposable
 
             string loadedComposite = $"{bestModel}-{actualDevice}";
             Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, loaded = true, model = loadedComposite, device = actualDevice, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId });
-            Post(new { type = "settings", settings = new { startup = _startup.IsEnabled(), language = _selectedLanguage } });
+            Post(new { type = "settings", settings = new {
+                startup = _startup.IsEnabled(),
+                language = _selectedLanguage,
+                sfx = _sfx.Enabled,
+                auto_paste = _autoPasteEnabled,
+                theme = SettingsStore.Theme,
+                audio_device = _audio.DeviceId,
+            } });
+            Post(new { type = "clear_history" });
             foreach (var entry in _history.Entries)
                 Post(new { type = "history_entry", entry = new { action = TranscriptionHistory.ActionLabel(entry.Action), text = entry.Text, timestamp = entry.Timestamp.ToString("g"), ts = entry.Timestamp.ToString("O") } });
             _sfx.PlayModelReady();
@@ -632,7 +730,14 @@ public sealed class UIBridge : IDisposable
             SetModelError(ex.Message);
             Post(new { type = "log", message = $"Model load failed: {ex.Message}" });
             Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, loaded = false, error = $"Model load failed: {ex.Message}", model = GetCompositeName(), device = _loadedDevice, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId });
-            Post(new { type = "settings", settings = new { startup = _startup.IsEnabled(), language = _selectedLanguage } });
+            Post(new { type = "settings", settings = new {
+                startup = _startup.IsEnabled(),
+                language = _selectedLanguage,
+                sfx = _sfx.Enabled,
+                auto_paste = _autoPasteEnabled,
+                theme = SettingsStore.Theme,
+                audio_device = _audio.DeviceId,
+            } });
             Post(new { type = "status_update", text = $"Model load failed: {ex.Message}", variant = "error" });
             Post(new { type = "notification", title = "Model load failed", message = ex.Message, variant = "error" });
             SendModelsStatus();
@@ -742,8 +847,8 @@ public sealed class UIBridge : IDisposable
         string providerLabel = provider switch
         {
             "cpu" => "CPU",
-            "cuda" => "GPU (CUDA)",
-            "dml" => "GPU (DirectML)",
+            "cuda" => "CUDA",
+            "dml" => "DirectML",
             _ => provider
         };
 
@@ -931,6 +1036,7 @@ public sealed class UIBridge : IDisposable
         _audio.LevelChanged -= _onAudioLevel;
         _phoneMic.AudioReceived -= _onPhoneMicAudio;
         _phoneMic.LogMessage -= _onPhoneMicLog;
+        _phoneMic.RecordingChanged -= _onPhoneMicRecording;
         _whisper.DownloadProgress -= _onDownloadProgress;
         _runtimeSetup.StepsChanged -= _onSetupSteps;
     }

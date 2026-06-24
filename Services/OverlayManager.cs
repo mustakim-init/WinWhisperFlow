@@ -114,7 +114,15 @@ public sealed class OverlayManager : IDisposable
         else
             CreateWindowOnUiThread();
 
-        lock (_gate) { return _window; }
+        lock (_gate)
+        {
+            if (_disposed && _window is not null)
+            {
+                _window.Dispatcher.Invoke(() => _window.Close());
+                _window = null;
+            }
+            return _window;
+        }
     }
 
     private void CreateWindowOnUiThread()
@@ -122,6 +130,7 @@ public sealed class OverlayManager : IDisposable
         lock (_gate)
         {
             if (_window is not null) return;
+            if (_disposed) return;
             _window = new OverlayWindow();
         }
     }

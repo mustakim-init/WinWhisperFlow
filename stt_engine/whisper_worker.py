@@ -72,7 +72,11 @@ def main():
                 no_speech_threshold=no_speech_threshold,
                 log_prob_threshold=log_prob_threshold,
             )
-            segment_list = list(segments)
+            segment_list = []
+            for i, segment in enumerate(segments):
+                segment_list.append(segment)
+                if i > 0 and i % 10 == 0:
+                    write({"type": "heartbeat", "segments_decoded": i})
             text = "".join(segment.text for segment in segment_list).strip()
             avg_log_values = [
                 segment.avg_logprob

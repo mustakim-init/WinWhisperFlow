@@ -52,9 +52,10 @@ def main():
     repo_id = f"Systran/faster-whisper-{model_name}"
 
     try:
-        # Prevent symlinks warning since we are printing JSON to stderr
+        # Prevent symlinks warning and unauthenticated nag since we are printing JSON to stderr
         import os
         os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+        os.environ["HF_HUB_DISABLE_TOKEN_WARNING"] = "1"
         
         huggingface_hub.snapshot_download(
             repo_id=repo_id,

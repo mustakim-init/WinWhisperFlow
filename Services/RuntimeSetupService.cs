@@ -11,15 +11,17 @@ public sealed class RuntimeSetupService
 
     public async Task<bool> IsReadyAsync()
     {
-        if (!File.Exists(RuntimePaths.UserVenvPython) && !File.Exists(FindProjectVenvPython()))
-            return false;
-
-        string python = File.Exists(RuntimePaths.UserVenvPython)
-            ? RuntimePaths.UserVenvPython
-            : FindProjectVenvPython();
+        string userPython = RuntimePaths.UserVenvPython;
+        string projectPython = FindProjectVenvPython();
+        string? python = File.Exists(userPython) ? userPython : (File.Exists(projectPython) ? projectPython : null);
+        if (python is null) return false;
 
         var gpu = new GpuDetectionService();
         var (provider, _) = gpu.Detect();
+
+        // Check basic imports
+        // GPU provider availability is verified at model load time by the worker,
+        // which auto-falls back to CPU if the provider isn't actually available.
         string imports = provider is "cuda" or "dml"
             ? "import faster_whisper; import requests; import soundfile; import onnxruntime"
             : "import faster_whisper; import requests; import soundfile";
@@ -69,6 +71,7 @@ public sealed class RuntimeSetupService
             int venvResult = await RunSilentAsync("python", $" -m venv \"{venvPath}\"", RuntimePaths.RuntimeRoot, 60000, ct);
             if (venvResult != 0 || !File.Exists(venvPython))
             {
+                try { Directory.Delete(venvPath, recursive: true); } catch { }
                 steps[1] = steps[1] with { Status = "error", Error = "Failed to create virtual environment." };
                 Emit();
                 return;

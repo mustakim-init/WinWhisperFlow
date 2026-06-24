@@ -1,5 +1,5 @@
-import React from 'react';
-import { motion } from 'framer-motion';
+import React, { useState } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { Mic, Smartphone, Box, Settings, Captions } from 'lucide-react';
 
 export type PageId = 'dictate' | 'captures' | 'phone-mic' | 'models' | 'settings';
@@ -11,7 +11,7 @@ interface NavItem {
 }
 
 const navItems: NavItem[] = [
-  { id: 'dictate', label: 'Dictate', icon: <Mic size={20} /> },
+  { id: 'dictate', label: 'Transcribe', icon: <Mic size={20} /> },
   { id: 'captures', label: 'Captures', icon: <Captions size={20} /> },
   { id: 'phone-mic', label: 'Phone Mic', icon: <Smartphone size={20} /> },
   { id: 'models', label: 'Models', icon: <Box size={20} /> },
@@ -22,9 +22,19 @@ interface SidebarProps {
   active: PageId;
   onChange: (id: PageId) => void;
   ready: boolean;
+  statusText?: string;
+  statusVariant?: 'success' | 'warning' | 'error' | '';
 }
 
-export function Sidebar({ active, onChange, ready }: SidebarProps) {
+export function Sidebar({ active, onChange, ready, statusText, statusVariant }: SidebarProps) {
+  const [hovered, setHovered] = useState(false);
+
+  const dotColor =
+    statusVariant === 'error' ? 'bg-red-400' :
+    statusVariant === 'warning' ? 'bg-amber-400 animate-pulse' :
+    ready ? 'bg-emerald-400' :
+    'bg-amber-400 animate-pulse';
+
   return (
     <nav className="fixed left-0 top-0 h-full w-20 bg-sidebar border-r border-border flex flex-col items-center py-6 gap-6 select-none z-40">
       {/* Logo */}
@@ -72,19 +82,35 @@ export function Sidebar({ active, onChange, ready }: SidebarProps) {
         })}
       </div>
 
-      {/* Status / Version */}
-      <div className="mt-auto flex flex-col items-center gap-1">
-        {ready ? (
-          <span className="flex items-center gap-1 text-[10px] text-muted-foreground/50">
-            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
-            v1.0
-          </span>
-        ) : (
-          <span className="flex items-center gap-1 text-[10px] text-muted-foreground/50">
-            <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
-            setup
-          </span>
-        )}
+      {/* Status + Version */}
+      <div
+        className="mt-auto flex flex-col items-center gap-1.5 relative"
+        onMouseEnter={() => setHovered(true)}
+        onMouseLeave={() => setHovered(false)}
+      >
+        <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground/50">
+          <span className={`w-1.5 h-1.5 rounded-full ${dotColor}`} />
+          v1.0
+        </span>
+
+        {/* Status tooltip */}
+        <AnimatePresence>
+          {hovered && statusText && (
+            <motion.div
+              initial={{ opacity: 0, x: -4 }}
+              animate={{ opacity: 1, x: 0 }}
+              exit={{ opacity: 0, x: -4 }}
+              transition={{ duration: 0.15 }}
+              className={`absolute left-full ml-3 bottom-0 whitespace-nowrap px-3 py-1.5 rounded-lg text-[11px] font-medium shadow-lg border border-border/60 bg-popover text-popover-foreground ${
+                statusVariant === 'error' ? 'text-red-400' :
+                statusVariant === 'warning' ? 'text-amber-400' :
+                'text-emerald-400'
+              }`}
+            >
+              {statusText}
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
     </nav>
   );

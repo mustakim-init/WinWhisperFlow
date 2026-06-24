@@ -142,36 +142,62 @@ public sealed class WhisperBridgeService : IDisposable
 
             var request = new { type = "transcribe", audio_path = audioPath, language };
             await proc.StandardInput.WriteLineAsync(JsonSerializer.Serialize(request));
-            string? line = await ReadLineWithTimeoutAsync(proc.StandardOutput, Timeout.InfiniteTimeSpan, ct);
-            if (line is null)
-            {
-                KillWorker();
-                throw new InvalidOperationException("STT worker closed unexpectedly.");
-            }
 
-            JsonDocument? doc;
-            try { doc = JsonDocument.Parse(line.TrimStart('\uFEFF')); }
-            catch (JsonException)
+            // Two-layer safety: sliding-window timeout + process exit watchdog
+            // Loop to skip intermediate heartbeat messages
+            while (true)
             {
-                KillWorker();
-                string preview = line.Length > 200 ? line[..200] + "..." : line;
-                throw new InvalidOperationException($"STT worker returned invalid JSON: {preview}");
-            }
-            using (doc)
-            {
-                JsonElement root = doc.RootElement;
-                if (root.TryGetProperty("error", out JsonElement error))
-                    throw new InvalidOperationException(error.GetString());
+                var readTask = ReadLineWithSlidingTimeoutAsync(proc.StandardOutput, TimeSpan.FromSeconds(60), ct);
+                var exitTask = WaitForProcessExitAsync(proc, ct);
 
-                return new TranscriptionResult(
-                    root.GetProperty("text").GetString() ?? "",
-                    root.TryGetProperty("language", out JsonElement resultLanguage) ? resultLanguage.GetString() ?? "" : "",
-                    root.TryGetProperty("language_probability", out JsonElement languageProbability) ? languageProbability.GetDouble() : 0,
-                    root.TryGetProperty("segment_count", out JsonElement segmentCount) ? segmentCount.GetInt32() : 0,
-                    root.TryGetProperty("avg_log_probability", out JsonElement avgLogProbability) && avgLogProbability.ValueKind != JsonValueKind.Null
-                        ? avgLogProbability.GetDouble() : null,
-                    root.TryGetProperty("no_speech_probability", out JsonElement noSpeechProbability) && noSpeechProbability.ValueKind != JsonValueKind.Null
-                        ? noSpeechProbability.GetDouble() : null);
+                var completed = await Task.WhenAny(readTask, exitTask);
+                if (completed == exitTask)
+                {
+                    KillWorker();
+                    throw new InvalidOperationException("STT worker process exited during transcription.");
+                }
+
+                string? line = await readTask;
+                if (line is null)
+                {
+                    KillWorker();
+                    throw new InvalidOperationException("STT worker closed unexpectedly.");
+                }
+
+                JsonDocument? doc;
+                try { doc = JsonDocument.Parse(line.TrimStart('\uFEFF')); }
+                catch (JsonException)
+                {
+                    KillWorker();
+                    string preview = line.Length > 200 ? line[..200] + "..." : line;
+                    throw new InvalidOperationException($"STT worker returned invalid JSON: {preview}");
+                }
+
+                using (doc)
+                {
+                    JsonElement root = doc.RootElement;
+
+                    // Skip heartbeat/progress messages
+                    if (root.TryGetProperty("type", out var msgType) && msgType.GetString() == "heartbeat")
+                        continue;
+
+                    if (root.TryGetProperty("error", out JsonElement error))
+                        throw new InvalidOperationException(error.GetString());
+
+                    // Must have "text" to be a final result
+                    if (!root.TryGetProperty("text", out _))
+                        continue;
+
+                    return new TranscriptionResult(
+                        root.GetProperty("text").GetString() ?? "",
+                        root.TryGetProperty("language", out JsonElement resultLanguage) ? resultLanguage.GetString() ?? "" : "",
+                        root.TryGetProperty("language_probability", out JsonElement languageProbability) ? languageProbability.GetDouble() : 0,
+                        root.TryGetProperty("segment_count", out JsonElement segmentCount) ? segmentCount.GetInt32() : 0,
+                        root.TryGetProperty("avg_log_probability", out JsonElement avgLogProbability) && avgLogProbability.ValueKind != JsonValueKind.Null
+                            ? avgLogProbability.GetDouble() : null,
+                        root.TryGetProperty("no_speech_probability", out JsonElement noSpeechProbability) && noSpeechProbability.ValueKind != JsonValueKind.Null
+                            ? noSpeechProbability.GetDouble() : null);
+                }
             }
         }
         finally
@@ -226,6 +252,7 @@ public sealed class WhisperBridgeService : IDisposable
             {
                 DeleteModel(compositeName);
                 string errMsg = ex is OperationCanceledException ? "Download cancelled" : ex.Message;
+                try { File.AppendAllText(RuntimePaths.LogPath, $"[{DateTime.Now:HH:mm:ss}] Download failed: {compositeName} — {errMsg}{Environment.NewLine}"); } catch { }
                 DownloadProgress?.Invoke(this, new(model, 0, 0, "error", errMsg, CompositeName: compositeName));
             }
         }
@@ -316,38 +343,43 @@ public sealed class WhisperBridgeService : IDisposable
 
     public void DeleteModel(string compositeName)
     {
-        var (model, _) = SttRuntimeOptions.FromCompositeName(compositeName);
+        var (model, provider) = SttRuntimeOptions.FromCompositeName(compositeName);
 
-        // Delete faster-whisper cache (CPU/CUDA)
-        try
+        if (provider is "dml")
         {
-            string cacheDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                ".cache", "huggingface", "hub");
-            string modelDir = $"models--Systran--faster-whisper-{model}";
-            string userPath = Path.Combine(cacheDir, modelDir);
-            if (Directory.Exists(userPath))
-                Directory.Delete(userPath, recursive: true);
+            // Delete sherpa-onnx cache (DML)
+            try
+            {
+                string sherpaDir = Path.Combine(RuntimePaths.ModelsRoot, $"sherpa-onnx-whisper-{model}");
+                if (Directory.Exists(sherpaDir))
+                    Directory.Delete(sherpaDir, recursive: true);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Failed to delete sherpa-onnx model {compositeName}: {ex.Message}");
+            }
+        }
+        else
+        {
+            // Delete faster-whisper cache (CPU/CUDA)
+            try
+            {
+                string cacheDir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                    ".cache", "huggingface", "hub");
+                string modelDir = $"models--Systran--faster-whisper-{model}";
+                string userPath = Path.Combine(cacheDir, modelDir);
+                if (Directory.Exists(userPath))
+                    Directory.Delete(userPath, recursive: true);
 
-            string altPath = Path.Combine(RuntimePaths.ModelsRoot, modelDir);
-            if (Directory.Exists(altPath))
-                Directory.Delete(altPath, recursive: true);
-        }
-        catch (Exception ex)
-        {
-            Debug.WriteLine($"Failed to delete faster-whisper model {compositeName}: {ex.Message}");
-        }
-
-        // Delete sherpa-onnx cache (DML)
-        try
-        {
-            string sherpaDir = Path.Combine(RuntimePaths.ModelsRoot, $"sherpa-onnx-whisper-{model}");
-            if (Directory.Exists(sherpaDir))
-                Directory.Delete(sherpaDir, recursive: true);
-        }
-        catch (Exception ex)
-        {
-            Debug.WriteLine($"Failed to delete sherpa-onnx model {compositeName}: {ex.Message}");
+                string altPath = Path.Combine(RuntimePaths.ModelsRoot, modelDir);
+                if (Directory.Exists(altPath))
+                    Directory.Delete(altPath, recursive: true);
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Failed to delete faster-whisper model {compositeName}: {ex.Message}");
+            }
         }
     }
 
@@ -557,13 +589,36 @@ public sealed class WhisperBridgeService : IDisposable
         string decoder = Path.Combine(sherpaDir, $"{prefix}-decoder.onnx");
         string tokens = Path.Combine(sherpaDir, $"{prefix}-tokens.txt");
 
-        if (File.Exists(encoder) && File.Exists(decoder) && File.Exists(tokens))
-            return true;
+        if (!File.Exists(encoder) || !File.Exists(decoder) || !File.Exists(tokens))
+        {
+            // Try int8 variant
+            encoder = Path.Combine(sherpaDir, $"{prefix}-encoder.int8.onnx");
+            decoder = Path.Combine(sherpaDir, $"{prefix}-decoder.int8.onnx");
+            if (!File.Exists(encoder) || !File.Exists(decoder) || !File.Exists(tokens))
+                return false;
+        }
 
-        // Try int8 variant
-        encoder = Path.Combine(sherpaDir, $"{prefix}-encoder.int8.onnx");
-        decoder = Path.Combine(sherpaDir, $"{prefix}-decoder.int8.onnx");
-        return File.Exists(encoder) && File.Exists(decoder) && File.Exists(tokens);
+        // Verify files are not empty / corrupt stubs
+        var encInfo = new FileInfo(encoder);
+        var decInfo = new FileInfo(decoder);
+        if (encInfo.Length < 1024 || decInfo.Length < 1024)
+            return false;
+
+        // Small .onnx shells need external .weights
+        if (encInfo.Length < 10 * 1024 * 1024)
+        {
+            string encWeights = Path.Combine(sherpaDir, $"{prefix}-encoder.weights");
+            if (!File.Exists(encWeights) || new FileInfo(encWeights).Length < 1024)
+                return false;
+        }
+        if (decInfo.Length < 10 * 1024 * 1024)
+        {
+            string decWeights = Path.Combine(sherpaDir, $"{prefix}-decoder.weights");
+            if (!File.Exists(decWeights) || new FileInfo(decWeights).Length < 1024)
+                return false;
+        }
+
+        return true;
     }
 
     private async Task EnsureGpuModelDownloadedAsync(string compositeName, CancellationToken ct = default)
@@ -646,7 +701,7 @@ public sealed class WhisperBridgeService : IDisposable
                         string? fileName = root.TryGetProperty("file", out var fileProp) ? fileProp.GetString() : null;
                         if (fileName is not null)
                         {
-            string sherpaDir = Path.Combine(RuntimePaths.ModelsRoot, $"sherpa-onnx-whisper-{model}");
+                            string sherpaDir = Path.Combine(RuntimePaths.ModelsRoot, $"sherpa-onnx-whisper-{model}");
                             string filePath = Path.Combine(sherpaDir, fileName);
                             if (File.Exists(filePath))
                             {
@@ -789,6 +844,45 @@ public sealed class WhisperBridgeService : IDisposable
         cts.CancelAfter(timeout);
         try { return await reader.ReadLineAsync(cts.Token); }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return null; }
+    }
+
+    // Sliding-window: resets timeout on each character received.
+    // If no data arrives within idleTimeout, the worker is unresponsive.
+    private static async Task<string?> ReadLineWithSlidingTimeoutAsync(StreamReader reader, TimeSpan idleTimeout, CancellationToken ct = default)
+    {
+        var sb = new System.Text.StringBuilder();
+        var buffer = new char[1];
+
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+
+            using var perReadCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            perReadCts.CancelAfter(idleTimeout);
+
+            try
+            {
+                int read = await reader.ReadAsync(buffer, 0, 1).WaitAsync(perReadCts.Token);
+                if (read == 0)
+                    return sb.Length > 0 ? sb.ToString() : null;
+                if (buffer[0] == '\n')
+                    return sb.ToString();
+                sb.Append(buffer[0]);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                throw new TimeoutException("STT worker is not responding (no data received for " + idleTimeout.TotalSeconds + " seconds).");
+            }
+        }
+    }
+
+    private static async Task WaitForProcessExitAsync(Process proc, CancellationToken ct = default)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            if (proc.HasExited) return;
+            await Task.Delay(2000, ct);
+        }
     }
 
     private static async Task<int> RunSilentAsync(string fileName, string arguments, string? workingDir, int timeoutMs, CancellationToken ct = default)

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { AnimatePresence, motion } from 'framer-motion';
-import { Play, StopCircle, Copy, Terminal } from 'lucide-react';
+import { Check, Play, StopCircle, Copy, Terminal } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { send } from '../bridge/ipc';
@@ -11,6 +11,7 @@ export function PhoneMicPage() {
   const [qrDataUrl, setQrDataUrl] = useState('');
   const [qrError, setQrError] = useState('');
   const [logs, setLogs] = useState<string[]>([]);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     if (store.phoneMicUrl && store.phoneMicUrl !== 'Not started') {
@@ -34,7 +35,7 @@ export function PhoneMicPage() {
     setLogs((prev) => {
       const next = [...prev];
       if (store.phoneMicRunning && !prev.some((l) => l.includes('Server started'))) {
-        next.push(`Server started on ws://localhost:8766/`);
+        next.push(`Server started on ${store.phoneMicUrl}`);
       }
       if (!store.phoneMicRunning && prev.length > 0 && !prev[prev.length - 1].includes('Server stopped')) {
         next.push(`Server stopped`);
@@ -49,7 +50,11 @@ export function PhoneMicPage() {
     }
     send({ type: 'phone_mic_toggle' });
   };
-  const handleCopy = () => send({ type: 'copy_text', text: store.phoneMicUrl });
+  const handleCopy = () => {
+    send({ type: 'copy_text', text: store.phoneMicUrl });
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
 
   return (
     <div className="py-8 max-w-2xl mx-auto space-y-6 h-full overflow-y-auto w-full scrollbar-hide">
@@ -83,7 +88,7 @@ export function PhoneMicPage() {
                 onClick={handleCopy}
                 disabled={!store.phoneMicUrl || store.phoneMicUrl === 'Not started'}
               >
-                <Copy size={12} className="mr-1" /> Copy
+                {copied ? <Check size={12} className="mr-1" /> : <Copy size={12} className="mr-1" />} {copied ? 'Copied!' : 'Copy'}
               </Button>
             </div>
           </div>

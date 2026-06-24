@@ -29,7 +29,7 @@ export function TranscriptionSettingsPage() {
           description="Whisper model to use for transcription"
           action={
             <Select
-              options={downloadedModels.length > 0 ? downloadedModels : [{ label: 'No models downloaded', value: '' }]}
+              options={downloadedModels.length > 0 ? downloadedModels : [{ label: 'No models downloaded', value: '__none__' }]}
               value={store.model}
               onChange={handleModelChange}
               className="w-44"

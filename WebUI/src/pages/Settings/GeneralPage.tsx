@@ -5,6 +5,7 @@ import { Select } from '../../components/ui/Select';
 import { Card } from '../../components/ui/Card';
 import { Badge } from '../../components/ui/Badge';
 import { send } from '../../bridge/ipc';
+import { useStore } from '../../hooks/useStore';
 import { useUiStore } from '../../stores/uiStore';
 import { SettingRow, SettingSection } from '../../components/ui/SettingRow';
 
@@ -21,6 +22,7 @@ const languageOptions = [
 export function GeneralPage() {
   const darkMode = useUiStore((s) => s.darkMode);
   const setDarkMode = useUiStore((s) => s.setDarkMode);
+  const store = useStore();
   const [startOnBoot, setStartOnBoot] = useState(false);
   const [sfxEnabled, setSfxEnabled] = useState(true);
   const [theme, setTheme] = useState('dark');
@@ -64,7 +66,7 @@ export function GeneralPage() {
       <div className="grid grid-cols-2 gap-4">
         <a
           href="#"
-          onClick={(e) => { e.preventDefault(); send({ type: 'open_directory', path: 'docs' }); }}
+          onClick={(e) => { e.preventDefault(); send({ type: 'open_url', url: 'https://github.com/anomalyco/WinWhisperFlow/wiki' }); }}
           className="flex items-center gap-3 rounded-xl border border-border bg-card p-4 hover:bg-muted/50 transition-colors group"
         >
           <div className="w-10 h-10 rounded-full bg-accent/15 flex items-center justify-center shrink-0">
@@ -78,7 +80,7 @@ export function GeneralPage() {
         </a>
         <a
           href="#"
-          onClick={(e) => { e.preventDefault(); send({ type: 'open_directory', path: 'github' }); }}
+          onClick={(e) => { e.preventDefault(); send({ type: 'open_url', url: 'https://github.com/anomalyco/WinWhisperFlow' }); }}
           className="flex items-center gap-3 rounded-xl border border-border bg-card p-4 hover:bg-muted/50 transition-colors group"
         >
           <div className="w-10 h-10 rounded-full bg-accent/15 flex items-center justify-center shrink-0">
@@ -92,15 +94,28 @@ export function GeneralPage() {
         </a>
       </div>
 
-      {/* Status Card */}
+      {/* Status Card — reflects actual service state */}
       <Card className="p-4 flex items-center gap-3">
         <span className="relative flex h-3 w-3">
-          <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-          <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-400" />
+          {store.statusVariant === 'error' ? (
+            <span className="relative inline-flex rounded-full h-3 w-3 bg-red-400" />
+          ) : store.statusVariant === 'warning' ? (
+            <>
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75" />
+              <span className="relative inline-flex rounded-full h-3 w-3 bg-amber-400" />
+            </>
+          ) : (
+            <>
+              <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+              <span className="relative inline-flex rounded-full h-3 w-3 bg-emerald-400" />
+            </>
+          )}
         </span>
         <div>
-          <p className="text-sm font-medium">Online</p>
-          <p className="text-xs text-muted-foreground">Service is running</p>
+          <p className="text-sm font-medium">{store.statusText || 'Starting\u2026'}</p>
+          <p className="text-xs text-muted-foreground">
+            {store.modelLoaded ? 'Model loaded' : store.modelLoading ? 'Loading model\u2026' : 'No model loaded'}
+          </p>
         </div>
         <Badge variant="outline" className="ml-auto text-[10px]">v1.0</Badge>
       </Card>

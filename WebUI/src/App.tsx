@@ -62,17 +62,16 @@ export default function App() {
       )}
 
       <div className="h-screen bg-background flex flex-col overflow-hidden">
-        {isReady && <Sidebar active={page} onChange={setPage} ready={isReady} />}
+        {isReady && (
+          <Sidebar
+            active={page}
+            onChange={setPage}
+            ready={isReady}
+            statusText={statusText}
+            statusVariant={statusVariant}
+          />
+        )}
         <main className={`flex-1 overflow-hidden flex flex-col ${isReady ? 'ml-20' : ''}`}>
-          {statusText && (
-            <div className={`shrink-0 px-8 pt-3 pb-0 text-xs font-medium ${
-              statusVariant === 'error' ? 'text-red-400' :
-              statusVariant === 'warning' ? 'text-amber-400' :
-              'text-emerald-400'
-            }`}>
-              {statusText}
-            </div>
-          )}
           {isReady && (
             <div className="flex-1 container mx-auto px-8 max-w-[1800px] h-full overflow-hidden flex flex-col">
               {renderPage()}

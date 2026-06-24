@@ -58,7 +58,7 @@ export function CapturesPage() {
           description="Whisper model for dictation"
           action={
             <Select
-              options={downloadedModels.length > 0 ? downloadedModels : [{ label: 'No models downloaded', value: '' }]}
+              options={downloadedModels.length > 0 ? downloadedModels : [{ label: 'No models downloaded', value: '__none__' }]}
               value={store.model}
               onChange={(v) => send({ type: 'load_model', model: v })}
               className="w-44"

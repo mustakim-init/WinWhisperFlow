@@ -3,7 +3,7 @@ import { onMessage, send } from '../bridge/ipc';
 import type { S2CMessage } from '../types/messages';
 import {
   setDevice, setGpuName, setAudioDevices, setAudioDeviceIndex, setModel, setIsListening, setIsReady, setModelLoaded as storeSetModelLoaded,
-  setModelNote, setAudioLevel, setLastTranscript, setStatus, addHistory, addLog,
+  setModelNote, setAudioLevel, setLastTranscript, setStatus, addHistory, addLog, clearHistory,
   setPhoneMicRunning, setPhoneMicUrl, setSetupSteps, setSetupOverall, setSetupError,
   setLanguage, setModelLoading, setAvailableModels, setPartialTranscript,
 } from '../lib/store';
@@ -25,6 +25,7 @@ export function useGlobalBridgeSync() {
           if (msg.gpuName) setGpuName(msg.gpuName);
           if (msg.audioDevices) setAudioDevices(msg.audioDevices);
           if (msg.audioDeviceIndex !== undefined) setAudioDeviceIndex(msg.audioDeviceIndex);
+          if (msg.darkMode !== undefined) useUiStore.getState().setDarkMode(msg.darkMode);
           useUiStore.getState().setIsReady(msg.ready);
           setIsReady(msg.ready);
           if (msg.ready && msg.error) {
@@ -41,6 +42,10 @@ export function useGlobalBridgeSync() {
           if (typeof s.language === 'string') setLanguage(s.language);
           break;
         }
+
+        case 'clear_history':
+          clearHistory();
+          break;
 
         case 'status_update':
           setStatus(msg.text, msg.variant);

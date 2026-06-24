@@ -37,7 +37,7 @@ interface ModelEntry {
 
 const providerLabel: Record<string, string> = {
   cpu: 'CPU (faster-whisper)',
-  cuda: 'GPU \u2014 CUDA (sherpa-onnx)',
+  cuda: 'GPU \u2014 CUDA (faster-whisper)',
   dml: 'GPU \u2014 DirectML (sherpa-onnx)',
 };
 
@@ -149,9 +149,6 @@ export function ModelsPage() {
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <span className="text-sm font-medium">{m.displayName}</span>
-            <Badge variant="outline" className="text-[9px] px-1.5 py-0 uppercase tracking-wider">
-              {m.provider}
-            </Badge>
             {m.loaded && (
               <Badge className="text-[10px] bg-accent/10 border-accent/20 text-accent font-medium hover:bg-accent/15">
                 Loaded
@@ -250,28 +247,31 @@ export function ModelsPage() {
   const providerOrder = ['cpu', 'cuda', 'dml'];
 
   return (
-    <div className="py-8 max-w-2xl mx-auto space-y-8 h-full overflow-y-auto w-full scrollbar-hide">
-      <div>
+    <div className="flex flex-col h-full min-h-0">
+      <div className="shrink-0 pt-8 pb-4 max-w-2xl mx-auto w-full">
         <h1 className="text-2xl font-bold">Models</h1>
         <p className="text-sm text-muted-foreground mt-0.5">Manage models for transcription and hardware acceleration</p>
       </div>
 
-      <div className="space-y-6">
-        {providerOrder.map((prov) => {
-          const list = byProvider[prov];
-          if (!list || list.length === 0) return null;
-          return (
-            <div key={prov} className="space-y-2">
-              <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-1">
-                {providerLabel[prov] || prov}
-              </h2>
-              <div className="border border-border bg-card rounded-xl divide-y divide-border/60 overflow-hidden shadow-sm">
-                {list.map(renderModelRow)}
+      <div className="flex-1 min-h-0 overflow-y-auto scrollbar-hide">
+        <div className="max-w-2xl mx-auto w-full space-y-6 pb-8">
+          {providerOrder.map((prov) => {
+            const list = byProvider[prov];
+            if (!list || list.length === 0) return null;
+            return (
+              <div key={prov} className="space-y-2">
+                <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider px-1">
+                  {providerLabel[prov] || prov}
+                </h2>
+                <div className="border border-border bg-card rounded-xl divide-y divide-border/60 overflow-hidden shadow-sm">
+                  {list.map(renderModelRow)}
+                </div>
               </div>
-            </div>
-          );
-        })}
+            );
+          })}
+        </div>
       </div>
     </div>
   );
 }
+

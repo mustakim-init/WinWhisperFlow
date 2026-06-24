@@ -50,12 +50,6 @@ public sealed class GlobalHotkeyService : IDisposable
             bool chordMatch = _chordKeys.Count > 0
                 && _chordKeys.Contains(vkCode)
                 && _chordKeys.All(k => k == vkCode || IsKeyDown(k));
-            bool isCapsLock = vkCode == 0x14;
-
-            if (isCapsLock && CanToggle())
-            {
-                ToggleRequested?.Invoke(this, EventArgs.Empty);
-            }
 
             if (chordMatch && CanToggle())
             {

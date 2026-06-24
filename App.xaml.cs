@@ -36,14 +36,15 @@ public partial class App : System.Windows.Application
         var window = new MainWindow();
         MainWindow = window;
 
+        // Always show so OnLoaded fires (WebView2, bridge, hotkey init).
+        // If --minimized, immediately hide to tray.
+        window.Show();
         if (e.Args.Any(arg => string.Equals(arg, "--minimized", System.StringComparison.OrdinalIgnoreCase)))
         {
+            window.WindowState = System.Windows.WindowState.Minimized;
             window.Hide();
             window.SetStartMinimized();
-            return;
         }
-
-        window.Show();
     }
 
     private static void LogCrash(Exception ex)

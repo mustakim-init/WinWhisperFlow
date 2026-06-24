@@ -36,7 +36,7 @@ export function SettingsLayout() {
   const Page = pages[activeTab];
 
   return (
-    <div className="flex flex-col h-full min-h-0 relative max-w-3xl mx-auto w-full pt-8">
+    <div className="flex flex-col h-full min-h-0 relative w-full pt-8">
       <div className="shrink-0 mb-4 px-4">
         <h1 className="text-2xl font-bold">Settings</h1>
         <p className="text-sm text-muted-foreground mt-0.5">Configure system parameters and speech options</p>

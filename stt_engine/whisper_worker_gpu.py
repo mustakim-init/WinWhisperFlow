@@ -312,7 +312,11 @@ def main():
                     no_speech_threshold=no_speech_threshold,
                     log_prob_threshold=log_prob_threshold,
                 )
-                segment_list = list(segments)
+                segment_list = []
+                for i, segment in enumerate(segments):
+                    segment_list.append(segment)
+                    if i > 0 and i % 10 == 0:
+                        write({"type": "heartbeat", "segments_decoded": i})
                 text = "".join(segment.text for segment in segment_list).strip()
                 avg_log_values = [
                     segment.avg_logprob
@@ -375,11 +379,27 @@ def main():
 
                 audio_path = request["audio_path"]
                 language = request.get("language") or default_language
-                text = model.transcribe(
-                    audio_path, language,
-                    no_speech_threshold=no_speech_threshold,
-                    log_prob_threshold=log_prob_threshold,
-                )
+
+                # Run transcription with a background heartbeat thread
+                import threading as _threading
+                _heartbeat_stop = _threading.Event()
+
+                def _heartbeat():
+                    while not _heartbeat_stop.is_set():
+                        _heartbeat_stop.wait(15)
+                        if not _heartbeat_stop.is_set():
+                            write({"type": "heartbeat", "status": "transcribing"})
+
+                _hb = _threading.Thread(target=_heartbeat, daemon=True)
+                _hb.start()
+                try:
+                    text = model.transcribe(
+                        audio_path, language,
+                        no_speech_threshold=no_speech_threshold,
+                        log_prob_threshold=log_prob_threshold,
+                    )
+                finally:
+                    _heartbeat_stop.set()
                 write({
                     "text": text,
                     "language": language,

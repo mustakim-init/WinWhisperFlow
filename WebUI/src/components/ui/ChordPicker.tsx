@@ -42,15 +42,8 @@ export function ChordPicker({ open, onOpenChange, onChord, initialKeys }: ChordP
     setCapturedKeys((prev) => new Set(prev).add(canonical));
   };
 
-  const handleKeyUp = (e: React.KeyboardEvent) => {
-    const canonical = canonicalKeyFromEvent(e.nativeEvent);
-    if (!canonical) return;
-
-    setCapturedKeys((prev) => {
-      const next = new Set(prev);
-      next.delete(canonical);
-      return next;
-    });
+  const handleKeyUp = (_e: React.KeyboardEvent) => {
+    // Keys stay captured until dialog closes or user resets
   };
 
   const chord = sortChordKeys(Array.from(capturedKeys));

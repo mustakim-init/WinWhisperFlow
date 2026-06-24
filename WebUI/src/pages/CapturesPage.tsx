@@ -1,5 +1,5 @@
 import { AnimatePresence, motion } from 'framer-motion';
-import { Copy, FileText, Mic, Smartphone, Trash2 } from 'lucide-react';
+import { Check, Copy, FileText, Mic, Smartphone, Trash2 } from 'lucide-react';
 import React, { useMemo, useState } from 'react';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
@@ -32,6 +32,7 @@ export function CapturesPage() {
   const store = useStore();
   const [search, setSearch] = useState('');
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
+  const [copied, setCopied] = useState(false);
 
   const filtered = useMemo(
     () => {
@@ -57,7 +58,11 @@ export function CapturesPage() {
     return filtered.indexOf(selected);
   }, [filtered, selected]);
 
-  const handleCopy = (text: string) => send({ type: 'copy_text', text });
+  const handleCopy = (text: string) => {
+    send({ type: 'copy_text', text });
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
 
   const handleDelete = () => {
     if (selected) {
@@ -138,13 +143,7 @@ export function CapturesPage() {
         <div className="absolute top-0 left-0 right-0 z-20 px-8">
           <div className="flex items-center justify-between py-5">
             {selected ? (
-              <div className="flex items-center gap-2">
-                <Badge variant="outline" className={cn('text-[11px] gap-1 px-2 py-0.5', sourceColor[selected.source ?? 'mic'])}>
-                  {sourceIcon[selected.source ?? 'mic']}
-                  {selected.action}
-                </Badge>
-                <span className="text-xs text-muted-foreground">{selected.timestamp}</span>
-              </div>
+              <span className="text-xs text-muted-foreground">{selected.timestamp}</span>
             ) : <div />}
           </div>
         </div>
@@ -167,7 +166,7 @@ export function CapturesPage() {
                 onClick={() => handleCopy(selected.text)}
                 className="gap-1.5"
               >
-                <Copy size={14} /> Copy
+                {copied ? <Check size={14} /> : <Copy size={14} />} {copied ? 'Copied!' : 'Copy'}
               </Button>
               <Button
                 variant="destructive"

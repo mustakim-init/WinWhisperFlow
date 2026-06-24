@@ -27,6 +27,8 @@ public sealed class GpuDetectionService
 
     public bool IsDirectMLCompatible()
     {
+        // OS-level check only — actual provider availability is verified
+        // at model load time by the Python worker, which reports fallback to CPU.
         Version osVersion = Environment.OSVersion.Version;
         return osVersion.Major >= 10 && osVersion.Build >= 18362;
     }

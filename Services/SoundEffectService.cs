@@ -64,6 +64,7 @@ public sealed class SoundEffectService : IDisposable
             player.PlaybackStopped += (_, _) =>
             {
                 reader.Dispose();
+                player.Dispose();
                 lock (_players) _players.Remove(name);
             };
             player.Play();

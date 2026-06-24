@@ -23,7 +23,7 @@ export const useUiStore = create<UiState>((set) => ({
   page: 'dictate',
   setPage: (page) => set({ page }),
 
-  darkMode: true,
+  darkMode: window.matchMedia('(prefers-color-scheme: dark)').matches,
   setDarkMode: (dark) => {
     document.documentElement.classList.toggle('dark', dark);
     set({ darkMode: dark });

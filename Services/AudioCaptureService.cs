@@ -1,5 +1,4 @@
 using System.IO;
-using System.Text;
 using NAudio.Wave;
 
 namespace WinWhisperFlow.Services;
@@ -31,7 +30,6 @@ public sealed class AudioCaptureService : IDisposable
     private string? _currentFile;
     private float _peakLevel;
     private int _deviceId;
-    private readonly List<byte> _pcmBuffer = new(65536);
     private readonly short[] _spectrumRing = new short[SpectrumFftSize];
     private int _spectrumPos;
     private int _spectrumCounter;
@@ -73,7 +71,6 @@ public sealed class AudioCaptureService : IDisposable
             Stop();
             _peakLevel = 0;
             LastPeakLevel = 0;
-            _pcmBuffer.Clear();
             _currentFile = Path.Combine(Path.GetTempPath(), $"winwhisper-{Guid.NewGuid():N}.wav");
             var format = new WaveFormat(16000, 16, 1);
 
@@ -116,41 +113,6 @@ public sealed class AudioCaptureService : IDisposable
         }
     }
 
-    public string? GetTemporarySnapshot()
-    {
-        byte[] copy;
-        lock (_gate)
-        {
-            if (_pcmBuffer.Count == 0) return null;
-            copy = _pcmBuffer.ToArray();
-        }
-
-        string snapshotPath = Path.Combine(Path.GetTempPath(), $"winwhisper-snap-{Guid.NewGuid():N}.wav");
-        WriteWavFile(snapshotPath, copy, 16000);
-        return snapshotPath;
-    }
-
-    private static void WriteWavFile(string path, byte[] pcmData, int sampleRate)
-    {
-        int dataSize = pcmData.Length;
-        using var fs = new FileStream(path, FileMode.Create, FileAccess.Write);
-        using var bw = new BinaryWriter(fs);
-        bw.Write(Encoding.ASCII.GetBytes("RIFF"));
-        bw.Write(36 + dataSize);
-        bw.Write(Encoding.ASCII.GetBytes("WAVE"));
-        bw.Write(Encoding.ASCII.GetBytes("fmt "));
-        bw.Write(16);
-        bw.Write((short)1);
-        bw.Write((short)1);
-        bw.Write(sampleRate);
-        bw.Write(sampleRate * 2);
-        bw.Write((short)2);
-        bw.Write((short)16);
-        bw.Write(Encoding.ASCII.GetBytes("data"));
-        bw.Write(dataSize);
-        bw.Write(pcmData);
-    }
-
     public void Cancel()
     {
         string? file = Stop();
@@ -165,7 +127,6 @@ public sealed class AudioCaptureService : IDisposable
         lock (_gate)
         {
             _writer?.Write(e.Buffer, 0, e.BytesRecorded);
-            _pcmBuffer.AddRange(new ArraySegment<byte>(e.Buffer, 0, e.BytesRecorded));
         }
 
         LevelChanged?.Invoke(this, level);

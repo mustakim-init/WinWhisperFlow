@@ -125,6 +125,7 @@ export function addLog(message: string) {
 }
 
 export function clearLogs() { set({ logs: [] }); }
+export function clearHistory() { set({ history: [] }); }
 
 export function removeHistory(index: number) {
   set({ history: state.history.filter((_, i) => i !== index) });
