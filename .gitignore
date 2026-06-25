@@ -3,6 +3,7 @@ bin/
 obj/
 dist/
 artifacts/
+publish/
 
 # Dependencies
 node_modules/
