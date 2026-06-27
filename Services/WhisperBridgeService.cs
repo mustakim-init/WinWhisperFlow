@@ -12,6 +12,7 @@ public sealed class WhisperBridgeService : IDisposable
     private readonly SemaphoreSlim _startGate = new(1, 1);
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _activeDownloads = new();
     private readonly ConcurrentDictionary<string, Process> _downloadProcesses = new();
+    private readonly ConcurrentDictionary<string, (long downloaded, long total)> _lastDownloadProgress = new();
     private readonly object _loadCtsLock = new();
     private Process? _process;
     private SttRuntimeOptions _options = SttRuntimeOptions.RecommendedForThisPc;
@@ -20,6 +21,7 @@ public sealed class WhisperBridgeService : IDisposable
     private string _reportedDevice = "cpu";
     private System.Threading.Timer? _healthTimer;
     private int _healthFailures;
+    private int _healthGen;
 
     public event EventHandler<ModelDownloadProgressArgs>? DownloadProgress;
 
@@ -40,7 +42,7 @@ public sealed class WhisperBridgeService : IDisposable
             _stderrLines.Clear();
             CancellationToken ct = _loadCts?.Token ?? CancellationToken.None;
 
-            if (_options.Device is "cuda")
+            if (_options.Device == "cuda")
             {
                 string composite = $"{_options.Model}-{_options.Device}";
                 await EnsureCpuModelDownloadedAsync(composite, ct);
@@ -131,7 +133,7 @@ public sealed class WhisperBridgeService : IDisposable
         }
     }
 
-    public async Task<TranscriptionResult> TranscribeAsync(string audioPath, string? language = null, CancellationToken ct = default)
+    public async Task<TranscriptionResult> TranscribeAsync(string audioPath, string? language = null, bool fileMode = false, CancellationToken ct = default)
     {
         await _gate.WaitAsync(ct);
         try
@@ -140,7 +142,7 @@ public sealed class WhisperBridgeService : IDisposable
             var proc = _process;
             if (proc is null || proc.HasExited) throw new InvalidOperationException("STT worker is not running.");
 
-            var request = new { type = "transcribe", audio_path = audioPath, language };
+            var request = new { type = "transcribe", audio_path = audioPath, language, file_mode = fileMode };
             await proc.StandardInput.WriteLineAsync(JsonSerializer.Serialize(request));
 
             // Two-layer safety: sliding-window timeout + process exit watchdog
@@ -148,7 +150,7 @@ public sealed class WhisperBridgeService : IDisposable
             while (true)
             {
                 var readTask = ReadLineWithSlidingTimeoutAsync(proc.StandardOutput, TimeSpan.FromSeconds(60), ct);
-                var exitTask = WaitForProcessExitAsync(proc, ct);
+                var exitTask = proc.WaitForExitAsync(ct);
 
                 var completed = await Task.WhenAny(readTask, exitTask);
                 if (completed == exitTask)
@@ -157,7 +159,13 @@ public sealed class WhisperBridgeService : IDisposable
                     throw new InvalidOperationException("STT worker process exited during transcription.");
                 }
 
-                string? line = await readTask;
+                string? line;
+                try { line = await readTask; }
+                catch (TimeoutException)
+                {
+                    KillWorker();
+                    throw new InvalidOperationException("STT worker is not responding (no data received for 60 seconds).");
+                }
                 if (line is null)
                 {
                     KillWorker();
@@ -208,7 +216,9 @@ public sealed class WhisperBridgeService : IDisposable
 
     public async Task<bool> PingAsync(CancellationToken ct = default)
     {
-        await _gate.WaitAsync(ct);
+        // Don't block on _gate — skip ping if transcription is in progress
+        if (!await _gate.WaitAsync(0, ct))
+            return _process is not null && !_process.HasExited;
         try
         {
             var proc = _process;
@@ -227,6 +237,13 @@ public sealed class WhisperBridgeService : IDisposable
     public async Task DownloadModelAsync(string compositeName, CancellationToken ct = default)
     {
         var (model, provider) = SttRuntimeOptions.FromCompositeName(compositeName);
+
+        // Demucs model download
+        if (provider == "demucs")
+        {
+            await EnsureDemucsModelDownloadedAsync(compositeName, ct);
+            return;
+        }
 
         var dlCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         if (!_activeDownloads.TryAdd(compositeName, dlCts))
@@ -250,8 +267,9 @@ public sealed class WhisperBridgeService : IDisposable
             }
             catch (Exception ex)
             {
-                DeleteModel(compositeName);
-                string errMsg = ex is OperationCanceledException ? "Download cancelled" : ex.Message;
+                bool isCancelled = ex is OperationCanceledException;
+                if (!isCancelled) DeleteModel(compositeName);
+                string errMsg = isCancelled ? "Download cancelled" : ex.Message;
                 try { File.AppendAllText(RuntimePaths.LogPath, $"[{DateTime.Now:HH:mm:ss}] Download failed: {compositeName} — {errMsg}{Environment.NewLine}"); } catch { }
                 DownloadProgress?.Invoke(this, new(model, 0, 0, "error", errMsg, CompositeName: compositeName));
             }
@@ -260,6 +278,7 @@ public sealed class WhisperBridgeService : IDisposable
         {
             if (_activeDownloads.TryRemove(compositeName, out var cts))
                 cts.Dispose();
+            _lastDownloadProgress.TryRemove(compositeName, out _);
         }
     }
 
@@ -280,11 +299,32 @@ public sealed class WhisperBridgeService : IDisposable
         DeleteModel(compositeName);
     }
 
+    public void PauseDownload(string compositeName)
+    {
+        if (_activeDownloads.TryRemove(compositeName, out var cts))
+        {
+            cts.Cancel();
+            cts.Dispose();
+        }
+
+        if (_downloadProcesses.TryRemove(compositeName, out var proc))
+        {
+            try { if (!proc.HasExited) proc.Kill(entireProcessTree: true); } catch { }
+            proc.Dispose();
+        }
+
+        // Notify UI — keep partials, set paused status with last known progress
+        var (model, _) = SttRuntimeOptions.FromCompositeName(compositeName);
+        var lastProg = _lastDownloadProgress.TryGetValue(compositeName, out var lp) ? lp : (0, 0);
+        DownloadProgress?.Invoke(this, new(model, lastProg.downloaded, lastProg.total, "paused", CompositeName: compositeName));
+    }
+
     public bool IsModelDownloaded(string provider, string model)
     {
         return provider switch
         {
             "dml" => GpuModelIsComplete(model),
+            "demucs" => DemucsModelIsDownloaded(),
             _ => CpuModelIsComplete(model)
         };
     }
@@ -344,6 +384,34 @@ public sealed class WhisperBridgeService : IDisposable
     public void DeleteModel(string compositeName)
     {
         var (model, provider) = SttRuntimeOptions.FromCompositeName(compositeName);
+
+        if (provider == "demucs")
+        {
+            // Delete Demucs model from torch hub cache
+            try
+            {
+                string cacheDir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                    ".cache", "torch", "hub", "checkpoints");
+
+                // Try multiple known checkpoint hashes for different Demucs versions
+                string[] knownCheckpoints = { "955717e8-8726e21a.th", "4c322b83-d8dc4b37.th" };
+                foreach (string name in knownCheckpoints)
+                {
+                    string modelFile = Path.Combine(cacheDir, name);
+                    if (File.Exists(modelFile))
+                        File.Delete(modelFile);
+                    string partFile = modelFile + ".part";
+                    if (File.Exists(partFile))
+                        File.Delete(partFile);
+                }
+            }
+            catch (Exception ex)
+            {
+                Debug.WriteLine($"Failed to delete Demucs model {compositeName}: {ex.Message}");
+            }
+            return;
+        }
 
         if (provider is "dml")
         {
@@ -437,6 +505,10 @@ public sealed class WhisperBridgeService : IDisposable
                 return "Python dependency missing (faster_whisper). Run Setup to install packages.";
             return "Python dependency missing. Run Setup to install packages.";
         }
+        if (stderr.Contains("DmlExecutionProvider not available", StringComparison.OrdinalIgnoreCase))
+            return "GPU acceleration not available (DmlExecutionProvider). Run Setup to install GPU packages.";
+        if (stderr.Contains("CUDAExecutionProvider not available", StringComparison.OrdinalIgnoreCase))
+            return "GPU acceleration not available (CUDAExecutionProvider). Run Setup to install GPU packages.";
         if (!string.IsNullOrWhiteSpace(stderr))
             return $"{fallback} Python said: {stderr}";
         return fallback;
@@ -526,6 +598,7 @@ public sealed class WhisperBridgeService : IDisposable
                         long downloaded = root.GetProperty("downloaded").GetInt64();
                         long total = root.GetProperty("total").GetInt64();
                         double speed = root.TryGetProperty("speed", out var speedProp) ? speedProp.GetDouble() : 0.0;
+                        _lastDownloadProgress[compositeName] = (downloaded, total);
                         DownloadProgress?.Invoke(this, new(model, downloaded, total, "downloading", CompositeName: compositeName, Speed: speed));
                     }
                 }
@@ -685,6 +758,7 @@ public sealed class WhisperBridgeService : IDisposable
                             cumDown = totalCompleted + downloaded;
                             cumTotal = totalCompleted + Math.Max(total, 1);
                         }
+                        _lastDownloadProgress[compositeName] = (cumDown, cumTotal);
                         DownloadProgress?.Invoke(this, new(model, cumDown, cumTotal, "downloading", CompositeName: compositeName, Speed: speed));
                     }
                     else if (type == "file_done")
@@ -765,6 +839,151 @@ public sealed class WhisperBridgeService : IDisposable
                ?? throw new FileNotFoundException("Could not find stt_engine\\download_gpu_model.py.");
     }
 
+    private async Task EnsureDemucsModelDownloadedAsync(string compositeName, CancellationToken ct = default)
+    {
+        if (DemucsModelIsDownloaded()) return;
+
+        ct.ThrowIfCancellationRequested();
+
+        string downloadScript = ResolveDemucsDownloadScriptPath();
+        string python = ResolvePython();
+
+        var psi = new ProcessStartInfo
+        {
+            FileName = python,
+            Arguments = $"-u \"{downloadScript}\"",
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+            StandardErrorEncoding = new System.Text.UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+        };
+
+        var process = Process.Start(psi);
+        if (process is null)
+            throw new InvalidOperationException("Failed to start Demucs download script.");
+
+        _downloadProcesses[compositeName] = process;
+
+        try
+        {
+            process.OutputDataReceived += (_, _) => { };
+            process.BeginOutputReadLine();
+
+            var stderrCapture = new System.Text.StringBuilder();
+
+            process.ErrorDataReceived += (_, args) =>
+            {
+                if (string.IsNullOrWhiteSpace(args.Data))
+                    return;
+                stderrCapture.AppendLine(args.Data);
+                try
+                {
+                    using var doc = JsonDocument.Parse(args.Data);
+                    var root = doc.RootElement;
+                    string type = root.GetProperty("type").GetString() ?? "";
+
+                    if (type == "dl_progress")
+                    {
+                        long downloaded = root.GetProperty("downloaded").GetInt64();
+                        long total = root.GetProperty("total").GetInt64();
+                        double speed = root.TryGetProperty("speed", out var speedProp) ? speedProp.GetDouble() : 0.0;
+                        _lastDownloadProgress[compositeName] = (downloaded, total);
+                        DownloadProgress?.Invoke(this, new("htdemucs", downloaded, total, "downloading", CompositeName: compositeName, Speed: speed));
+                    }
+                }
+                catch
+                {
+                }
+            };
+            process.BeginErrorReadLine();
+
+            try
+            {
+                using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                cts.CancelAfter(TimeSpan.FromMinutes(10));
+                await process.WaitForExitAsync(cts.Token);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                try { process.Kill(entireProcessTree: true); } catch { }
+                throw new InvalidOperationException("Demucs model download timed out.");
+            }
+            catch (OperationCanceledException)
+            {
+                try { process.Kill(entireProcessTree: true); } catch { }
+                throw;
+            }
+
+            if (process.ExitCode != 0)
+            {
+                string stderr = stderrCapture.ToString();
+                string detail = stderr.Length > 200 ? stderr[..200] + "..." : stderr;
+                throw new InvalidOperationException($"Demucs model download failed. Python said: {detail}");
+            }
+        }
+        finally
+        {
+            _downloadProcesses.TryRemove(compositeName, out _);
+            process.Dispose();
+        }
+    }
+
+    private static bool DemucsModelIsDownloaded()
+    {
+        try
+        {
+            string checkScript = ResolveDemucsCheckScriptPath();
+            string python = ResolvePython();
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = python,
+                Arguments = $"-u \"{checkScript}\"",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                CreateNoWindow = true,
+            };
+
+            using var process = Process.Start(psi);
+            if (process is null) return false;
+
+            string output = process.StandardOutput.ReadToEnd();
+            process.WaitForExit(5000);
+
+            using var doc = JsonDocument.Parse(output);
+            return doc.RootElement.GetProperty("downloaded").GetBoolean();
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string ResolveDemucsDownloadScriptPath()
+    {
+        string[] candidates =
+        {
+            Path.Combine(AppContext.BaseDirectory, "stt_engine", "download_demucs_model.py"),
+            Path.Combine(Environment.CurrentDirectory, "stt_engine", "download_demucs_model.py")
+        };
+
+        return candidates.FirstOrDefault(File.Exists)
+               ?? throw new FileNotFoundException("Could not find stt_engine\\download_demucs_model.py.");
+    }
+
+    private static string ResolveDemucsCheckScriptPath()
+    {
+        string[] candidates =
+        {
+            Path.Combine(AppContext.BaseDirectory, "stt_engine", "check_demucs_model.py"),
+            Path.Combine(Environment.CurrentDirectory, "stt_engine", "check_demucs_model.py")
+        };
+
+        return candidates.FirstOrDefault(File.Exists)
+               ?? throw new FileNotFoundException("Could not find stt_engine\\check_demucs_model.py.");
+    }
+
     private static string ResolvePython()
     {
         string[] candidates =
@@ -781,12 +1000,15 @@ public sealed class WhisperBridgeService : IDisposable
     private void StartHealthCheck()
     {
         StopHealthCheck();
+        int gen = Interlocked.Increment(ref _healthGen);
         var ct = _loadCts?.Token ?? CancellationToken.None;
         _healthFailures = 0;
         _healthTimer = new System.Threading.Timer(_ =>
         {
             try
             {
+                // If _healthGen != gen, a newer StartHealthCheck superseded us
+                if (_healthGen != gen) return;
                 if (ct.IsCancellationRequested) { StopHealthCheck(); return; }
                 var proc = _process;
                 if (proc is null || proc.HasExited)
@@ -876,15 +1098,6 @@ public sealed class WhisperBridgeService : IDisposable
         }
     }
 
-    private static async Task WaitForProcessExitAsync(Process proc, CancellationToken ct = default)
-    {
-        while (!ct.IsCancellationRequested)
-        {
-            if (proc.HasExited) return;
-            await Task.Delay(2000, ct);
-        }
-    }
-
     private static async Task<int> RunSilentAsync(string fileName, string arguments, string? workingDir, int timeoutMs, CancellationToken ct = default)
     {
         var psi = new ProcessStartInfo
@@ -944,6 +1157,8 @@ public sealed class WhisperBridgeService : IDisposable
                 proc.Dispose();
             }
         }
+
+        _lastDownloadProgress.Clear();
 
         lock (_loadCtsLock)
         {

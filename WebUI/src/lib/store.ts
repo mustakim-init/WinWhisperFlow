@@ -30,6 +30,11 @@ interface AppState {
   setupOverall: number;
   setupError: string | undefined;
   availableModels: ModelInfo[];
+  fileTranscribing: boolean;
+  fileName: string | null;
+  fileProgress: number;
+  fileStage: string;
+  fileElapsed: number;
 }
 
 export interface LogEntry {
@@ -68,6 +73,11 @@ let state: AppState = {
   setupOverall: 0,
   setupError: undefined,
   availableModels: [],
+  fileTranscribing: false,
+  fileName: null,
+  fileProgress: 0,
+  fileStage: '',
+  fileElapsed: 0,
 };
 
 const listeners = new Set<Listener>();
@@ -112,6 +122,12 @@ export function setSetupSteps(s: SetupStep[]) { set({ setupSteps: s }); }
 export function setSetupOverall(o: number) { set({ setupOverall: o }); }
 export function setSetupError(e: string | undefined) { set({ setupError: e }); }
 export function setAvailableModels(ms: ModelInfo[]) { set({ availableModels: ms }); }
+export function setFileTranscribing(v: boolean) { set({ fileTranscribing: v }); }
+export function setFileName(n: string | null) { set({ fileName: n }); }
+export function setFileProgress(p: number) { set({ fileProgress: p }); }
+export function setFileStage(s: string) { set({ fileStage: s }); }
+export function setFileElapsed(e: number) { set({ fileElapsed: e }); }
+export function resetFileState() { set({ fileTranscribing: false, fileName: null, fileProgress: 0, fileStage: '', fileElapsed: 0 }); }
 
 export function addHistory(entry: HistoryEntry) {
   set({ history: [entry, ...state.history] });

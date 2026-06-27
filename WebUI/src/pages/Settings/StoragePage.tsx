@@ -21,7 +21,7 @@ export function StoragePage() {
   };
 
   const handleOpenFolder = () => {
-    send({ type: 'open_directory', path: 'models' });
+    send({ type: 'open_directory', path: modelDir || 'models' });
   };
 
   const handleResetDefault = () => {

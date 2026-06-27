@@ -16,8 +16,9 @@ public sealed class PhoneMicService : IDisposable
     private TcpListener? _listener;
     private CancellationTokenSource? _cts;
     private X509Certificate2? _cert;
-    private bool _phoneRecordingActive;
-
+    private readonly object _certLock = new();
+    private int _phoneRecordingCount;
+    private readonly SemaphoreSlim _connectionThrottle = new(20, 20);
 
     public event EventHandler<(string WavPath, TaskCompletionSource<string> Result)>? AudioReceived;
     public event EventHandler<string>? LogMessage;
@@ -25,7 +26,7 @@ public sealed class PhoneMicService : IDisposable
 
     public int Port { get; private set; } = 8766;
     public bool IsRunning => _listener is not null;
-    public bool IsPhoneRecording => _phoneRecordingActive;
+    public bool IsPhoneRecording => _phoneRecordingCount > 0;
     public string? LocalIp { get; private set; }
 
     public void Start(int port = 8766)
@@ -34,7 +35,8 @@ public sealed class PhoneMicService : IDisposable
         Port = port;
 
         LocalIp = GetLanIp();
-        _cert = CreateSelfSignedCert();
+        var newCert = CreateSelfSignedCert();
+        lock (_certLock) { _cert = newCert; }
         _cts = new CancellationTokenSource();
         _listener = new TcpListener(IPAddress.Any, port);
         _listener.Start();
@@ -57,8 +59,9 @@ public sealed class PhoneMicService : IDisposable
             _listener = null;
         }
 
-        _cert?.Dispose();
-        _cert = null;
+        X509Certificate2? oldCert;
+        lock (_certLock) { oldCert = _cert; _cert = null; }
+        oldCert?.Dispose();
 
         LogMessage?.Invoke(this, "Phone mic server stopped");
     }
@@ -87,14 +90,32 @@ public sealed class PhoneMicService : IDisposable
         Directory.CreateDirectory(certDir);
         string pfxPath = Path.Combine(certDir, "phone-mic.pfx");
 
-        if (File.Exists(pfxPath))
+        string pwdPath = pfxPath + ".pwd";
+        string? password = null;
+
+        if (File.Exists(pfxPath) && File.Exists(pwdPath))
         {
             try
             {
-                return new X509Certificate2(pfxPath, (string?)null,
-                    X509KeyStorageFlags.MachineKeySet | X509KeyStorageFlags.PersistKeySet);
+                byte[] encrypted = File.ReadAllBytes(pwdPath);
+                byte[] decrypted = System.Security.Cryptography.ProtectedData.Unprotect(
+                    encrypted, null, System.Security.Cryptography.DataProtectionScope.CurrentUser);
+                password = System.Text.Encoding.UTF8.GetString(decrypted);
+                return new X509Certificate2(pfxPath, password,
+                    X509KeyStorageFlags.UserKeySet | X509KeyStorageFlags.PersistKeySet);
             }
-            catch { }
+            catch (CryptographicException)
+            {
+                // Corrupted PFX or password — will generate a new one below
+                try { File.Delete(pfxPath); } catch { }
+                try { File.Delete(pwdPath); } catch { }
+            }
+            catch (IOException)
+            {
+                // File access issue — will generate a new one below
+                try { File.Delete(pfxPath); } catch { }
+                try { File.Delete(pwdPath); } catch { }
+            }
         }
 
         var subject = new X500DistinguishedName("CN=WinWhisperFlow");
@@ -105,12 +126,18 @@ public sealed class PhoneMicService : IDisposable
         req.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(new OidCollection { new Oid("1.3.6.1.5.5.7.3.1") }, false));
         using var cert = req.CreateSelfSigned(DateTimeOffset.Now, DateTimeOffset.Now.AddYears(10));
 
-        // Export to PFX so the private key is file-backed and accessible to the TLS stack
-        byte[] pfxBytes = cert.Export(X509ContentType.Pfx);
+        // Export to PFX with a random password, store password via DPAPI (machine-local encryption)
+        password = Guid.NewGuid().ToString("N");
+        byte[] pfxBytes = cert.Export(X509ContentType.Pfx, password);
         File.WriteAllBytes(pfxPath, pfxBytes);
 
-        return new X509Certificate2(pfxPath, (string?)null,
-            X509KeyStorageFlags.MachineKeySet | X509KeyStorageFlags.PersistKeySet);
+        byte[] encryptedPwd = System.Security.Cryptography.ProtectedData.Protect(
+            System.Text.Encoding.UTF8.GetBytes(password), null,
+            System.Security.Cryptography.DataProtectionScope.CurrentUser);
+        File.WriteAllBytes(pwdPath, encryptedPwd);
+
+        return new X509Certificate2(pfxPath, password,
+            X509KeyStorageFlags.UserKeySet | X509KeyStorageFlags.PersistKeySet);
     }
 
     private async Task AcceptClientsAsync(CancellationToken ct)
@@ -120,44 +147,58 @@ public sealed class PhoneMicService : IDisposable
             try
             {
                 var client = await _listener.AcceptTcpClientAsync(ct);
+                await _connectionThrottle.WaitAsync(ct);
                 _ = HandleClientAsync(client, ct);
             }
             catch (OperationCanceledException) { break; }
             catch (ObjectDisposedException) { break; }
             catch (InvalidOperationException) { break; }
+            catch (Exception ex)
+            {
+                LogMessage?.Invoke(this, $"Accept error: {ex.Message}");
+                try { await Task.Delay(1000, ct); } catch { break; }
+            }
         }
     }
 
     private async Task HandleClientAsync(TcpClient client, CancellationToken ct)
     {
-        using (client)
+        try
         {
-            try
+            using (client)
             {
-                byte[] peekBuf = new byte[1];
-                int peeked = await client.Client.ReceiveAsync(peekBuf.AsMemory(), SocketFlags.Peek, ct);
-                if (peeked == 0) return;
+                try
+                {
+                    byte[] peekBuf = new byte[1];
+                    int peeked = await client.Client.ReceiveAsync(peekBuf.AsMemory(), SocketFlags.Peek, ct);
+                    if (peeked == 0) return;
 
-                if (peekBuf[0] == 0x16) // TLS handshake — browser client
-                {
-                    await HandleHttpsClientAsync(client, ct);
+                    if (peekBuf[0] == 0x16) // TLS handshake — browser client
+                    {
+                        await HandleHttpsClientAsync(client, ct);
+                    }
+                    else // Plain HTTP — WebSocket forwarder client
+                    {
+                        await HandleWebSocketClientAsync(client, ct);
+                    }
                 }
-                else // Plain HTTP — WebSocket forwarder client
+                catch (OperationCanceledException) { }
+                catch (Exception ex)
                 {
-                    await HandleWebSocketClientAsync(client, ct);
+                    LogMessage?.Invoke(this, $"Client error: {ex.Message}");
                 }
             }
-            catch (OperationCanceledException) { }
-            catch (Exception ex)
-            {
-                LogMessage?.Invoke(this, $"Client error: {ex.Message}");
-            }
+        }
+        finally
+        {
+            _connectionThrottle.Release();
         }
     }
 
     private async Task HandleHttpsClientAsync(TcpClient client, CancellationToken ct)
     {
-        var cert = _cert;
+        X509Certificate2? cert;
+        lock (_certLock) { cert = _cert; }
         if (cert is null) return;
 
         using var sslStream = new SslStream(client.GetStream(), false);
@@ -168,7 +209,7 @@ public sealed class PhoneMicService : IDisposable
                 ServerCertificate = cert,
                 ClientCertificateRequired = false,
                 CertificateRevocationCheckMode = X509RevocationMode.NoCheck,
-                EnabledSslProtocols = SslProtocols.None,
+                EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
             };
             await sslStream.AuthenticateAsServerAsync(options, ct);
         }
@@ -210,8 +251,8 @@ public sealed class PhoneMicService : IDisposable
         }
         else if (method == "POST" && path == "/recording")
         {
-            _phoneRecordingActive = true;
-            RecordingChanged?.Invoke(this, true);
+            if (Interlocked.Increment(ref _phoneRecordingCount) == 1)
+                RecordingChanged?.Invoke(this, true);
             LogMessage?.Invoke(this, "Phone recording started");
             byte[] response = Encoding.UTF8.GetBytes(
                 "HTTP/1.1 200 OK\r\n" +
@@ -311,8 +352,8 @@ public sealed class PhoneMicService : IDisposable
         }
         finally
         {
-            _phoneRecordingActive = false;
-            RecordingChanged?.Invoke(this, false);
+            if (Interlocked.Decrement(ref _phoneRecordingCount) <= 0)
+                RecordingChanged?.Invoke(this, false);
             try { File.Delete(wavPath); } catch { }
         }
     }
@@ -616,5 +657,9 @@ async function stopRecording() {
 </script></body></html>";
     }
 
-    public void Dispose() => Stop();
+    public void Dispose()
+    {
+        Stop();
+        _connectionThrottle.Dispose();
+    }
 }

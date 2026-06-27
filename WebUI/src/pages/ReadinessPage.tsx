@@ -26,7 +26,7 @@ const allStepsDone = (steps: SetupStep[]) =>
 
 export function ReadinessPage({ steps, overall, error, statusText, onRetry, onContinue }: ReadinessPageProps) {
   const loadingModel = allStepsDone(steps) && !error;
-  const canContinue = !!error && allStepsDone(steps);
+  const canContinue = !!error;
 
   return (
     <div className="fixed inset-0 z-50 bg-background flex items-center justify-center">

@@ -13,8 +13,48 @@ def load_config():
 
 
 def write(payload):
-    sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    sys.stdout.flush()
+    sys.stdout.buffer.write((json.dumps(payload, ensure_ascii=False) + "\n").encode("utf-8"))
+    sys.stdout.buffer.flush()
+
+
+def trim_repetitive_tail(segments):
+    if len(segments) < 2:
+        return segments
+    trimmed = list(segments)
+    while len(trimmed) > 1:
+        last = trimmed[-1]
+        words = last.text.strip().split()
+        if len(words) < 4:
+            break
+        unique_ratio = len(set(w.lower() for w in words)) / len(words)
+        if unique_ratio < 0.3:
+            trimmed.pop()
+            continue
+        quarter = max(1, len(words) // 4)
+        chunks = [words[i:i+quarter] for i in range(0, len(words), quarter)]
+        unique_chunks = len(set(' '.join(c).lower() for c in chunks))
+        if unique_chunks <= 1:
+            trimmed.pop()
+            continue
+        break
+    return trimmed
+
+
+def filter_segments(segments):
+    seen = set()
+    result = []
+    for seg in segments:
+        if seg.no_speech_prob is not None and seg.no_speech_prob > 0.6:
+            continue
+        if seg.avg_logprob is not None and seg.avg_logprob < -0.8:
+            continue
+        text = seg.text.strip()
+        text_lower = text.lower()
+        if text_lower in seen:
+            continue
+        seen.add(text_lower)
+        result.append(seg)
+    return result
 
 
 def main():
@@ -61,22 +101,41 @@ def main():
 
             audio_path = request["audio_path"]
             language = request.get("language") or default_language
-            segments, info = model.transcribe(
-                audio_path,
+            file_mode = request.get("file_mode", False)
+
+            if file_mode:
+                use_vad = False
+                use_no_speech = no_speech_threshold
+                use_log_prob = log_prob_threshold
+                use_temperature = 0
+                use_word_timestamps = False
+            else:
+                use_vad = vad_filter
+                use_no_speech = no_speech_threshold
+                use_log_prob = log_prob_threshold
+                use_temperature = 0
+                use_word_timestamps = False
+
+            transcribe_kwargs = dict(
+                audio=audio_path,
                 language=language,
                 beam_size=beam_size,
-                vad_filter=vad_filter,
+                vad_filter=use_vad,
                 vad_parameters={"min_silence_duration_ms": vad_min_silence},
                 condition_on_previous_text=False,
-                temperature=0,
-                no_speech_threshold=no_speech_threshold,
-                log_prob_threshold=log_prob_threshold,
+                temperature=use_temperature,
+                word_timestamps=use_word_timestamps,
+                no_speech_threshold=use_no_speech,
+                log_prob_threshold=use_log_prob,
             )
+
+            segments, info = model.transcribe(**transcribe_kwargs)
             segment_list = []
             for i, segment in enumerate(segments):
                 segment_list.append(segment)
                 if i > 0 and i % 10 == 0:
                     write({"type": "heartbeat", "segments_decoded": i})
+
             text = "".join(segment.text for segment in segment_list).strip()
             avg_log_values = [
                 segment.avg_logprob

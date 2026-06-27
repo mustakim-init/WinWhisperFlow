@@ -39,6 +39,7 @@ const providerLabel: Record<string, string> = {
   cpu: 'CPU (faster-whisper)',
   cuda: 'GPU \u2014 CUDA (faster-whisper)',
   dml: 'GPU \u2014 DirectML (sherpa-onnx)',
+  demucs: 'Tools',
 };
 
 export function ModelsPage() {
@@ -139,6 +140,7 @@ export function ModelsPage() {
   const renderModelRow = (m: ModelEntry) => {
     const dl = downloadState[m.name];
     const downloading = dl?.status === 'downloading';
+    const paused = dl?.status === 'paused';
     const progress = dl ? (dl.total > 0 ? (dl.downloaded / dl.total) * 100 : 0) : m.progress;
 
     return (
@@ -159,6 +161,11 @@ export function ModelsPage() {
                 Downloaded
               </Badge>
             )}
+            {paused && (
+              <Badge variant="outline" className="text-[10px] border-amber-500/30 text-amber-400 bg-amber-500/5 font-medium">
+                Paused
+              </Badge>
+            )}
           </div>
           <div className="text-xs text-muted-foreground mt-1">
             {downloading ? (
@@ -170,7 +177,7 @@ export function ModelsPage() {
               formatSize(m.size)
             )}
           </div>
-          {downloading && dl && (
+          {(downloading || paused) && dl && (
             <div className="mt-1.5 space-y-1">
               <Progress value={progress ?? 0} className="h-1 w-32" />
               <div className="text-[10px] text-muted-foreground">
@@ -182,14 +189,43 @@ export function ModelsPage() {
 
         <div className="shrink-0">
           {downloading ? (
-            <Button
-              variant="outline"
-              size="sm"
-              className="text-[11px] h-8"
-              onClick={() => send({ type: 'cancel_download', model: m.name })}
-            >
-              Cancel
-            </Button>
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-[11px] h-8"
+                onClick={() => send({ type: 'pause_download', model: m.name })}
+              >
+                Pause
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-[11px] h-8 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                onClick={() => send({ type: 'cancel_download', model: m.name })}
+              >
+                Cancel
+              </Button>
+            </div>
+          ) : paused ? (
+            <div className="flex gap-2">
+              <Button
+                variant="default"
+                size="sm"
+                className="h-8 text-xs"
+                onClick={() => send({ type: 'resume_download', model: m.name })}
+              >
+                Resume
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-[11px] h-8 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                onClick={() => send({ type: 'cancel_download', model: m.name })}
+              >
+                Cancel
+              </Button>
+            </div>
           ) : m.downloaded ? (
             <div className="flex gap-2">
               <AlertDialog>
@@ -219,15 +255,17 @@ export function ModelsPage() {
                   </AlertDialogFooter>
                 </AlertDialogContent>
               </AlertDialog>
-              <Button
-                variant="secondary"
-                size="sm"
-                className="h-8 min-w-16 text-xs"
-                onClick={() => handleLoad(m.name)}
-                disabled={m.loaded}
-              >
-                {m.loaded ? <Check size={13} className="text-emerald-400" /> : 'Load'}
-              </Button>
+              {m.provider !== 'demucs' && (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  className="h-8 min-w-16 text-xs"
+                  onClick={() => handleLoad(m.name)}
+                  disabled={m.loaded}
+                >
+                  {m.loaded ? <Check size={13} className="text-emerald-400" /> : 'Load'}
+                </Button>
+              )}
             </div>
           ) : (
             <Button
@@ -244,7 +282,7 @@ export function ModelsPage() {
     );
   };
 
-  const providerOrder = ['cpu', 'cuda', 'dml'];
+  const providerOrder = ['cpu', 'cuda', 'dml', 'demucs'];
 
   return (
     <div className="flex flex-col h-full min-h-0">

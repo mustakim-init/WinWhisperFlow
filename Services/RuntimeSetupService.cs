@@ -12,23 +12,45 @@ public sealed class RuntimeSetupService
     public async Task<bool> IsReadyAsync()
     {
         string userPython = RuntimePaths.UserVenvPython;
-        string projectPython = FindProjectVenvPython();
+        string? projectPython = FindProjectVenvPython();
         string? python = File.Exists(userPython) ? userPython : (File.Exists(projectPython) ? projectPython : null);
+        if (python is null) return false;
+
+        // Check that basic Python packages are importable
+        string code = "import sys; import faster_whisper; import requests; import soundfile";
+        return await RunSilentAsync(python, $"-c \"{code}\"", null, 30000) == 0;
+    }
+
+    public async Task<bool> IsGpuProviderReadyAsync()
+    {
+        string python = ResolvePython();
         if (python is null) return false;
 
         var gpu = new GpuDetectionService();
         var (provider, _) = gpu.Detect();
 
-        // Check basic imports
-        // GPU provider availability is verified at model load time by the worker,
-        // which auto-falls back to CPU if the provider isn't actually available.
-        string imports = provider is "cuda" or "dml"
-            ? "import faster_whisper; import requests; import soundfile; import onnxruntime"
-            : "import faster_whisper; import requests; import soundfile";
+        if (provider is "cuda")
+        {
+            string code = "import sys; import onnxruntime; assert 'CUDAExecutionProvider' in onnxruntime.get_available_providers()";
+            return await RunSilentAsync(python, $"-c \"{code}\"", null, 30000) == 0;
+        }
 
-        string code = $"import sys; {imports}";
-        int exitCode = await RunSilentAsync(python, $"-c \"{code}\"", null, 30000);
-        return exitCode == 0;
+        if (provider is "dml")
+        {
+            string code = "import sys; import onnxruntime; assert 'DmlExecutionProvider' in onnxruntime.get_available_providers()";
+            return await RunSilentAsync(python, $"-c \"{code}\"", null, 30000) == 0;
+        }
+
+        return false;
+    }
+
+    private static string ResolvePython()
+    {
+        string userPython = RuntimePaths.UserVenvPython;
+        string? projectPython = FindProjectVenvPython();
+        return File.Exists(userPython) ? userPython
+             : File.Exists(projectPython) ? projectPython
+             : null!;
     }
 
     public async Task AutoSetupAsync(CancellationToken ct = default)
@@ -38,6 +60,7 @@ public sealed class RuntimeSetupService
             new("python", "Checking Python...", "pending"),
             new("venv", "Creating virtual environment...", "pending"),
             new("packages", "Installing dependencies...", "pending"),
+            new("gpu-packages", "Installing GPU dependencies...", "pending"),
             new("gpu", "Detecting GPU...", "pending"),
         };
 
@@ -86,47 +109,80 @@ public sealed class RuntimeSetupService
         Emit();
 
         string requirementsPath = ResolveRequirementsPath();
-        int pipResult = await RunSilentAsync(venvPython, $"-m pip install -r \"{requirementsPath}\"", null, 300000, ct);
+        int pipResult = await RunSilentAsync(venvPython, $"-m pip install -r \"{requirementsPath}\"", null, 600000, ct);
         if (pipResult != 0)
         {
             steps[2] = steps[2] with { Status = "error", Error = "pip install failed. Check your internet connection." };
             Emit();
             return;
         }
+        steps[2] = steps[2] with { Status = "done" };
+        Emit();
 
-        // Step 3b: GPU packages
+        // Step 3b: GPU packages — install one at a time so a single failure
+        // doesn't lose already-installed packages (e.g. librosa's numpy
+        // version conflict should not block onnxruntime-directml).
+        steps[3] = steps[3] with { Status = "running" };
+        Emit();
+
         var gpuInfo = new GpuDetectionService();
         var (gpuProvider, gpuCard) = gpuInfo.Detect();
-        if (steps[2].Status != "error" && gpuProvider is "cuda" or "dml")
+        if (steps[2].Status == "done" && gpuProvider is "cuda" or "dml")
         {
-            string gpuRequirementsPath = ResolveGpuRequirementsPath();
-            int gpuPipResult = await RunSilentAsync(venvPython, $"-m pip install -r \"{gpuRequirementsPath}\"", null, 180000, ct);
-            if (gpuPipResult != 0)
+            string[] gpuPackages = [
+                "onnxruntime-directml>=1.16.0",
+                "numpy>=1.21.0,<2.5.0",
+                "librosa>=0.10.0"
+            ];
+
+            var failedPackages = new List<string>();
+            foreach (var pkg in gpuPackages)
             {
-                steps[2] = steps[2] with { Status = "error", Error = $"GPU package install failed (exit code {gpuPipResult}). GPU acceleration disabled." };
+                bool ok = false;
+                for (int attempt = 1; attempt <= 2; attempt++)
+                {
+                    if (attempt > 1)
+                    {
+                        steps[3] = steps[3] with { Label = $"Retrying {pkg} (attempt {attempt}/2)" };
+                        Emit();
+                    }
+                    int exitCode = await RunSilentAsync(venvPython, $"-m pip install \"{pkg}\"", null, 600000, ct);
+                    if (exitCode == 0) { ok = true; break; }
+                }
+                if (!ok) failedPackages.Add(pkg.Split('>', '<', '=')[0]);
+            }
+
+            if (failedPackages.Count > 0)
+            {
+                string detail = string.Join(", ", failedPackages);
+                steps[3] = steps[3] with { Status = "error", Error = $"GPU packages failed: {detail}. CPU models work. Retry Setup to try again." };
+                Emit();
+            }
+            else
+            {
+                steps[3] = steps[3] with { Status = "done", Label = "GPU dependencies installed" };
                 Emit();
             }
         }
-
-        if (steps[2].Status != "error")
+        else
         {
-            steps[2] = steps[2] with { Status = "done" };
+            steps[3] = steps[3] with { Status = "done", Label = "No GPU detected, using CPU" };
             Emit();
         }
         ct.ThrowIfCancellationRequested();
 
         // Step 4: GPU detection
-        steps[3] = steps[3] with { Status = "running" };
+        steps[4] = steps[4] with { Status = "running" };
         Emit();
 
         string label = gpuCard;
         if (!string.IsNullOrEmpty(label))
         {
-            steps[3] = steps[3] with { Status = "done", Label = $"GPU: {label}" };
+            steps[4] = steps[4] with { Status = "done", Label = $"GPU: {label}" };
         }
         else
         {
-            steps[3] = steps[3] with { Status = "done", Label = "No GPU acceleration detected. Using CPU." };
+            steps[4] = steps[4] with { Status = "done", Label = "No GPU acceleration detected. Using CPU." };
         }
         Emit();
     }
@@ -197,7 +253,7 @@ public sealed class RuntimeSetupService
                ?? throw new FileNotFoundException("Could not find stt_engine\\requirements_gpu.txt.");
     }
 
-    private static string FindProjectVenvPython()
+    private static string? FindProjectVenvPython()
     {
         string[] candidates =
         {
@@ -205,6 +261,6 @@ public sealed class RuntimeSetupService
             Path.Combine(AppContext.BaseDirectory, ".venv", "Scripts", "python.exe")
         };
 
-        return candidates.FirstOrDefault(File.Exists) ?? "";
+        return candidates.FirstOrDefault(File.Exists);
     }
 }

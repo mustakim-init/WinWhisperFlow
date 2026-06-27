@@ -1,57 +1,4 @@
-import json
-import os
-import sys
-import threading
-import time
-import urllib.request
-
-# Suppress HF warnings before importing (must be set before huggingface_hub import)
-os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
-os.environ["HF_HUB_DISABLE_TOKEN_WARNING"] = "1"
-
-from huggingface_hub import HfApi, hf_hub_download
-
-# Cumulative progress tracking across all files
-_progress = {
-    "total": 0,
-    "cum": 0,
-    "lock": threading.Lock(),
-    "last_report": 0,
-}
-
-
-class _ProgressTqdm:
-    """Per-file progress bar that reports cumulative bytes to stderr."""
-
-    def __init__(self, *args, **kwargs):
-        self.total = kwargs.get("total", 0)
-        self.n = kwargs.get("initial", 0)
-        self._last_update = time.time()
-
-    def update(self, n):
-        self.n += n
-        now = time.time()
-        if now - self._last_update < 0.5 and (self.total <= 0 or self.n < self.total):
-            return
-        self._last_update = now
-        with _progress["lock"]:
-            cum = _progress["cum"] + self.n
-        report = json.dumps({
-            "type": "dl_progress",
-            "downloaded": cum,
-            "total": _progress["total"],
-        })
-        sys.stderr.write(report + "\n")
-        sys.stderr.flush()
-
-    def close(self):
-        pass
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *args):
-        self.close()
+import json, os, sys, time, urllib.error, urllib.request
 
 
 def _load_file_sizes(repo_id: str, files: list[str]) -> tuple[dict[str, int], int]:
@@ -62,9 +9,9 @@ def _load_file_sizes(repo_id: str, files: list[str]) -> tuple[dict[str, int], in
         url = f"https://huggingface.co/{repo_id}/resolve/main/{f}"
         req = urllib.request.Request(url, method="HEAD")
         try:
-            resp = urllib.request.urlopen(req, timeout=15)
-            raw = resp.headers.get("Content-Length")
-            size = int(raw) if raw else 0
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                raw = resp.headers.get("Content-Length")
+                size = int(raw) if raw else 0
         except Exception:
             size = 0
         sizes[f] = size
@@ -82,50 +29,98 @@ def main():
     repo_id = f"Systran/faster-whisper-{model_name}"
 
     try:
-        # 1. List repo files (skip metadata)
-        api = HfApi()
-        all_files = api.list_repo_files(repo_id)
-        files = [f for f in all_files if f not in (".gitattributes", "README.md")]
+        from tqdm import tqdm as _base_tqdm
 
-        if not files:
-            print(f"No files found in {repo_id}")
-            sys.exit(1)
+        def _make_progress_tracker(fixed_total):
+            class _JsonTqdm(_base_tqdm):
+                def __init__(self, *args, **kwargs):
+                    kwargs["file"] = open(os.devnull, "w")
+                    super().__init__(*args, **kwargs)
+                    self._last_time = 0.0
 
-        # 2. Get sizes upfront so the UI knows the total
-        file_sizes, total_size = _load_file_sizes(repo_id, files)
-        _progress["total"] = total_size
+                def update(self, n=1):
+                    super().update(n)
+                    if self.unit != "B":
+                        return
+                    now = time.time()
+                    if now - self._last_time < 0.5 and self.n != fixed_total:
+                        return
+                    self._last_time = now
+                    rate = self.format_dict.get("rate")
+                    sys.stderr.write(
+                        json.dumps({
+                            "type": "dl_progress",
+                            "downloaded": self.n,
+                            "total": fixed_total,
+                            "speed": rate if rate is not None else 0.0,
+                        })
+                        + "\n"
+                    )
+                    sys.stderr.flush()
+            return _JsonTqdm
 
-        # 3. Download each file through huggingface_hub (handles caching)
-        for f in files:
-            size = file_sizes.get(f, 0)
-            if size == 0:
-                continue
-            hf_hub_download(
-                repo_id,
-                f,
-                cache_dir=cache_dir,
-                tqdm_class=_ProgressTqdm,
-            )
-            with _progress["lock"]:
-                _progress["cum"] += size
-
-        # 4. Signal completion
+        from huggingface_hub import snapshot_download
+    except ImportError:
         sys.stderr.write(
-            json.dumps({
-                "type": "dl_progress",
-                "downloaded": total_size,
-                "total": total_size,
-            })
+            json.dumps({"type": "error", "message": "huggingface_hub or tqdm not installed. Run: pip install huggingface_hub tqdm"})
             + "\n"
         )
         sys.stderr.flush()
-        print("Download complete")
+        sys.exit(1)
 
+    os.makedirs(cache_dir, exist_ok=True)
+
+    # Determine expected files
+    # Whisper models have: model.bin, tokenizer.json, config.json, vocab.json, merges.txt (or .model)
+    all_files = [
+        "model.bin",
+        "tokenizer.json",
+        "config.json",
+        "vocab.json",
+        "merges.txt",
+    ]
+
+    sizes, total_size = _load_file_sizes(repo_id, all_files)
+
+    # Filter to files that actually exist on remote
+    expected_files = [f for f in all_files if sizes.get(f, 0) > 0]
+    expected_total = sum(sizes[f] for f in expected_files)
+
+    if not expected_files:
+        sys.stderr.write(
+            json.dumps({"type": "error", "message": f"No files found for model '{model_name}' at {repo_id}"})
+            + "\n"
+        )
+        sys.stderr.flush()
+        sys.exit(1)
+
+    sys.stderr.write(json.dumps({"type": "dl_progress", "total": expected_total, "downloaded": 0, "speed": 0}) + "\n")
+    sys.stderr.flush()
+
+    try:
+        snapshot_download(
+            repo_id=repo_id,
+            allow_patterns=expected_files,
+            tqdm_class=_make_progress_tracker(expected_total),
+        )
     except Exception as exc:
         sys.stderr.write(json.dumps({"type": "error", "message": str(exc)}) + "\n")
         sys.stderr.flush()
         sys.exit(1)
 
+    sys.stderr.write(
+        json.dumps({"type": "dl_progress", "total": expected_total, "downloaded": expected_total, "speed": 0})
+        + "\n"
+    )
+    sys.stderr.flush()
+
+    print("Download complete")
+
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as exc:
+        sys.stderr.write(json.dumps({"type": "error", "message": str(exc)}) + "\n")
+        sys.stderr.flush()
+        sys.exit(1)

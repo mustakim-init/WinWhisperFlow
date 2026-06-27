@@ -99,6 +99,9 @@ public partial class MainWindow : Window
                     _textInjector, _hotkeyService, _runtimeSetup,
                     _transcriptionHistory, _startupService, DetectWindowsDarkMode,
                     _overlay, _sfx);
+
+                WebView.Drop += OnWebViewDrop;
+                WebView.DragOver += OnWebViewDragOver;
             };
 
             _hotkeyService.ToggleRequested += async (_, _) =>
@@ -161,6 +164,28 @@ public partial class MainWindow : Window
                 File.AppendAllText(RuntimePaths.LogPath, line + Environment.NewLine);
             }
             catch (Exception ex) { Debug.WriteLine($"[AppendLog] Failed to write log: {ex.Message}"); }
+        }
+    }
+
+    private void OnWebViewDragOver(object sender, System.Windows.DragEventArgs e)
+    {
+        if (e.Data.GetDataPresent(System.Windows.DataFormats.FileDrop))
+        {
+            e.Effects = System.Windows.DragDropEffects.Copy;
+            e.Handled = false;
+        }
+    }
+
+    private void OnWebViewDrop(object sender, System.Windows.DragEventArgs e)
+    {
+        if (e.Data.GetDataPresent(System.Windows.DataFormats.FileDrop))
+        {
+            string[]? files = e.Data.GetData(System.Windows.DataFormats.FileDrop) as string[];
+            if (files is not null && files.Length > 0 && File.Exists(files[0]))
+            {
+                e.Handled = true;
+                _bridge?.TranscribeFileAsync(files[0]);
+            }
         }
     }
 

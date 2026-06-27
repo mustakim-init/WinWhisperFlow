@@ -35,7 +35,12 @@ export function send(msg: C2SMessage): void {
   }
 }
 
+let _setupDone = false;
+
 export function setup(): void {
+  if (_setupDone) return;
+  _setupDone = true;
+
   try {
     const wv = (window as { chrome?: { webview?: { addEventListener?: (event: string, handler: (e: unknown) => void) => void } } }).chrome?.webview;
     if (wv?.addEventListener) {

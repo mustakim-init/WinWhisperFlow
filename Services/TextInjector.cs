@@ -41,35 +41,16 @@ public sealed class TextInjector
         }
         finally
         {
-            if (!keepClipboard && previousClipboard is not null)
+            if (!keepClipboard && previousClipboard is not null &&
+                System.Windows.Application.Current?.Dispatcher is { } restoreDispatcher)
             {
-                await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
+                await restoreDispatcher.InvokeAsync(() =>
                 {
                     try { System.Windows.Clipboard.SetDataObject(previousClipboard); }
                     catch (Exception ex) { Debug.WriteLine($"[TextInjector] Clipboard restore failed: {ex.Message}"); }
                 });
             }
         }
-    }
-
-    public bool SendUnicodeText(string text, IntPtr targetWindow)
-    {
-        if (string.IsNullOrWhiteSpace(text)) return false;
-
-        if (!WindowFocusService.TryActivate(targetWindow))
-            return false;
-
-        Thread.Sleep(80);
-
-        var inputs = new INPUT[text.Length * 2];
-        for (int i = 0; i < text.Length; i++)
-        {
-            inputs[i * 2] = CreateUnicodeInput(text[i], false);
-            inputs[i * 2 + 1] = CreateUnicodeInput(text[i], true);
-        }
-
-        uint sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
-        return sent == inputs.Length;
     }
 
     public string GetTargetWindowTitle(IntPtr targetWindow)
@@ -122,22 +103,6 @@ public sealed class TextInjector
                 {
                     wVk = (ushort)KeyInterop.VirtualKeyFromKey(key),
                     dwFlags = keyUp ? 0x0002u : 0u
-                }
-            }
-        };
-    }
-
-    private static INPUT CreateUnicodeInput(char character, bool keyUp)
-    {
-        return new INPUT
-        {
-            type = 1,
-            U = new InputUnion
-            {
-                ki = new KEYBDINPUT
-                {
-                    wScan = character,
-                    dwFlags = 0x0004u | (keyUp ? 0x0002u : 0u)
                 }
             }
         };

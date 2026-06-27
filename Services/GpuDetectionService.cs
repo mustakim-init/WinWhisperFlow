@@ -47,7 +47,8 @@ public sealed class GpuDetectionService
                     return name;
             }
         }
-        catch { }
+        catch (ManagementException) { }
+        catch (UnauthorizedAccessException) { }
         return "";
     }
 

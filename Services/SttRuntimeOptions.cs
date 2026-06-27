@@ -13,7 +13,7 @@ public sealed record SttRuntimeOptions(
     public int VadMinSilenceDurationMs { get; init; } = 300;
     public double NoSpeechThreshold { get; init; } = 0.45;
     public double LogProbThreshold { get; init; } = -0.8;
-
+ 
     private static CachedGpuResult? _gpuCache;
 
     public static SttRuntimeOptions RecommendedForThisPc
@@ -39,6 +39,14 @@ public sealed record SttRuntimeOptions(
 
     public static (string Model, string Device) FromCompositeName(string composite)
     {
+        string[] validProviders = { "cpu", "cuda", "dml", "demucs" };
+
+        // Demucs composite: "demucs-htdemucs" -> provider=demucs, model=htdemucs
+        if (composite.StartsWith("demucs-"))
+        {
+            return ("htdemucs", "demucs");
+        }
+
         int lastHyphen = composite.LastIndexOf('-');
         if (lastHyphen < 0)
             return (composite, "cpu");
@@ -46,7 +54,6 @@ public sealed record SttRuntimeOptions(
         string provider = composite[(lastHyphen + 1)..];
         string model = composite[..lastHyphen];
 
-        string[] validProviders = { "cpu", "cuda", "dml" };
         if (!validProviders.Contains(provider))
             return (composite, "cpu");
 

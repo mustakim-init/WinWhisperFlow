@@ -6,6 +6,7 @@ import {
   setModelNote, setAudioLevel, setLastTranscript, setStatus, addHistory, addLog, clearHistory,
   setPhoneMicRunning, setPhoneMicUrl, setSetupSteps, setSetupOverall, setSetupError,
   setLanguage, setModelLoading, setAvailableModels, setPartialTranscript,
+  setFileTranscribing, setFileName, setFileProgress, setFileStage, setFileElapsed, resetFileState,
 } from '../lib/store';
 import { useUiStore } from '../stores/uiStore';
 import { useDownloadStore } from '../stores/downloadStore';
@@ -13,9 +14,24 @@ import { useToastStore } from '../stores/toastStore';
 
 export function useGlobalBridgeSync() {
   useEffect(() => {
-    send({ type: 'bridge_ready' });
+    // Retry bridge_ready until init is received (handles race where
+    // C# WebMessageReceived handler may not be registered yet)
+    let retries = 0
+    const maxRetries = 20
+    const interval = setInterval(() => {
+      send({ type: 'bridge_ready' })
+      retries++
+      if (retries >= maxRetries) clearInterval(interval)
+    }, 250)
+    send({ type: 'bridge_ready' })
 
     const unsubMsg = onMessage((msg: S2CMessage) => {
+      // Stop bridge_ready retries as soon as we receive ANY message from C#.
+      // The first message proves the WebView2 bridge is registered. Continued
+      // retries would trigger duplicate RunHealthCheckAsync calls, each
+      // cancelling the previous one and causing spurious "Setup failed" errors.
+      clearInterval(interval)
+
       switch (msg.type) {
         case 'init':
           setSetupError(undefined);
@@ -144,6 +160,26 @@ export function useGlobalBridgeSync() {
           setAvailableModels(msg.models);
           break;
 
+        case 'file_transcribe_progress':
+          if (msg.fileName) setFileName(msg.fileName);
+          if (msg.progress !== undefined) setFileProgress(msg.progress);
+          if (msg.elapsed !== undefined) setFileElapsed(msg.elapsed);
+          setFileStage(msg.status);
+          if (msg.status === 'picking' || msg.status === 'extracting' || msg.status === 'analyzing' || msg.status === 'separating') {
+            setFileTranscribing(true);
+            setStatus(msg.message, 'warning');
+          } else if (msg.status === 'transcribing') {
+            setFileTranscribing(true);
+            setStatus(msg.message, 'warning');
+          } else if (msg.status === 'done') {
+            resetFileState();
+            setStatus('Transcription complete', 'success');
+          } else if (msg.status === 'error') {
+            resetFileState();
+            setStatus('Transcription failed', 'error');
+          }
+          break;
+
         case 'notification':
           addLog(`[${msg.variant}] ${msg.title}: ${msg.message}`);
           useToastStore.getState().addToast({
@@ -155,6 +191,6 @@ export function useGlobalBridgeSync() {
       }
     });
 
-    return () => { unsubMsg(); };
+    return () => { clearInterval(interval); unsubMsg(); };
   }, []);
 }

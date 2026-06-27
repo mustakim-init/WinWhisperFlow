@@ -5,7 +5,7 @@ export interface DownloadState {
   compositeName: string | null;
   downloaded: number;
   total: number;
-  status: 'idle' | 'downloading' | 'done' | 'error';
+  status: 'idle' | 'downloading' | 'paused' | 'done' | 'error';
   error?: string;
   speed?: number;
 }
@@ -15,6 +15,7 @@ interface DownloadStore {
   setProgress: (compositeName: string, downloaded: number, total: number, status: DownloadState['status'], error?: string, speed?: number) => void;
   clear: (compositeName: string) => void;
   isActive: (compositeName: string) => boolean;
+  isPaused: (compositeName: string) => boolean;
 }
 
 export const useDownloadStore = create<DownloadStore>((set, get) => ({
@@ -36,4 +37,5 @@ export const useDownloadStore = create<DownloadStore>((set, get) => ({
     }),
 
   isActive: (compositeName) => get().downloads[compositeName]?.active ?? false,
+  isPaused: (compositeName) => get().downloads[compositeName]?.status === 'paused',
 }));

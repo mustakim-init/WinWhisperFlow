@@ -66,7 +66,7 @@ export function GeneralPage() {
       <div className="grid grid-cols-2 gap-4">
         <a
           href="#"
-          onClick={(e) => { e.preventDefault(); send({ type: 'open_url', url: 'https://github.com/anomalyco/WinWhisperFlow/wiki' }); }}
+          onClick={(e) => { e.preventDefault(); send({ type: 'open_url', url: 'https://github.com/mustakim-init/WinWhisperFlow/wiki' }); }}
           className="flex items-center gap-3 rounded-xl border border-border bg-card p-4 hover:bg-muted/50 transition-colors group"
         >
           <div className="w-10 h-10 rounded-full bg-accent/15 flex items-center justify-center shrink-0">
@@ -80,7 +80,7 @@ export function GeneralPage() {
         </a>
         <a
           href="#"
-          onClick={(e) => { e.preventDefault(); send({ type: 'open_url', url: 'https://github.com/anomalyco/WinWhisperFlow' }); }}
+          onClick={(e) => { e.preventDefault(); send({ type: 'open_url', url: 'https://github.com/mustakim-init/WinWhisperFlow' }); }}
           className="flex items-center gap-3 rounded-xl border border-border bg-card p-4 hover:bg-muted/50 transition-colors group"
         >
           <div className="w-10 h-10 rounded-full bg-accent/15 flex items-center justify-center shrink-0">

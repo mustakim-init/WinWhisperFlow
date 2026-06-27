@@ -13,6 +13,7 @@ if (-not (Test-Path ".venv\Scripts\python.exe")) {
 & ".\.venv\Scripts\python.exe" -m pip install --upgrade pip
 & ".\.venv\Scripts\python.exe" -m pip install -r "stt_engine\requirements.txt"
 & ".\.venv\Scripts\python.exe" -m pip install -r "stt_engine\requirements_gpu.txt"
+& ".\.venv\Scripts\python.exe" -m pip install demucs
 & ".\.venv\Scripts\python.exe" "stt_engine\preload_model.py"
 
 dotnet restore

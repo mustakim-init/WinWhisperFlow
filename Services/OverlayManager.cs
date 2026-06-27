@@ -15,7 +15,7 @@ public sealed class OverlayManager : IDisposable
     private readonly object _gate = new();
 
     private OverlayWindow? _window;
-    private bool _disposed;
+    private volatile bool _disposed;
     private readonly Dispatcher? _dispatcher;
 
     public OverlayManager(AudioCaptureService audio, CoreWebView2 mainWebView, string overlayDir)
@@ -69,18 +69,20 @@ public sealed class OverlayManager : IDisposable
     public void Dispose()
     {
         if (_disposed) return;
-        _disposed = true;
 
+        // Unsubscribe first to prevent new callbacks during teardown
         _audio.LevelChanged -= OnLevelChanged;
         _audio.SpectrumChanged -= OnSpectrumChanged;
 
+        _disposed = true;
+
         OverlayWindow? w;
-        lock (_gate) { w = _window; }
-        try
+        lock (_gate) { w = _window; _window = null; }
+        if (w is not null)
         {
-            if (w is not null) w.Dispatcher.Invoke(() => w.Close());
+            try { w.Dispatcher.Invoke(() => w.Close()); }
+            catch (Exception ex) { Debug.WriteLine($"[OverlayManager.Dispose] {ex.Message}"); }
         }
-        catch (Exception ex) { Debug.WriteLine($"[OverlayManager.Dispose] {ex.Message}"); }
     }
 
     private void OnLevelChanged(object? sender, float level)

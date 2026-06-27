@@ -24,6 +24,10 @@ public sealed class UIBridge : IDisposable
     private readonly OverlayManager? _overlay;
     private readonly SoundEffectService _sfx;
     private readonly GpuDetectionService _gpuDetect = new();
+    private readonly FFmpegService _ffmpeg = new();
+    private readonly SourceSeparationService _sourceSeparation = new();
+    private readonly SemaphoreSlim _fileTranscribeGate = new(1, 1);
+    private CancellationTokenSource? _fileTranscribeCts;
 
     private string _selectedLanguage = "en";
     private bool _modelLoaded;
@@ -34,6 +38,7 @@ public sealed class UIBridge : IDisposable
     private CancellationTokenSource? _streamCts;
     private CancellationTokenSource? _setupCts;
     private bool _disposed;
+    private bool _healthCheckRunning;
     private string? _gpuCache;
     private bool _autoPasteEnabled = true;
     private readonly object _ctsLock = new();
@@ -260,7 +265,147 @@ public sealed class UIBridge : IDisposable
         }
     }
 
-    // Streaming loop removed per user request for process once logic
+    public async Task TranscribeFileAsync(string inputPath, bool isMusic = false)
+    {
+        if (_disposed) return;
+
+        if (!_modelLoaded)
+        {
+            Post(new { type = "file_transcribe_progress", status = "error", message = "Model not loaded. Please load a model first." });
+            return;
+        }
+
+        if (isMusic && !_whisper.IsModelDownloaded("demucs", "htdemucs"))
+        {
+            Post(new { type = "file_transcribe_progress", status = "error", message = "Demucs not downloaded. Go to the Models page and download 'htdemucs' under Tools." });
+            return;
+        }
+
+        if (!_ffmpeg.IsAvailable)
+        {
+            Post(new { type = "file_transcribe_progress", status = "error", message = "FFmpeg not found. Run Setup to download it." });
+            return;
+        }
+
+        await _fileTranscribeGate.WaitAsync();
+        lock (_ctsLock) { _fileTranscribeCts = new CancellationTokenSource(); }
+        var ct = _fileTranscribeCts.Token;
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+
+        try
+        {
+            string fileName = Path.GetFileName(inputPath);
+
+            void ReportProgress(string status, string message, double pct)
+            {
+                Post(new
+                {
+                    type = "file_transcribe_progress",
+                    status,
+                    message,
+                    progress = pct,
+                    elapsed = sw.Elapsed.TotalSeconds,
+                    fileName
+                });
+            }
+
+            ReportProgress("extracting", $"Extracting audio from {fileName}\u2026", 0);
+            string extractedWav = await _ffmpeg.ExtractAudioAsync(inputPath);
+            ct.ThrowIfCancellationRequested();
+            ReportProgress("extracting", $"Extracted audio from {fileName}", 20);
+
+            string audioForWhisper = extractedWav;
+            bool cleanupVocals = false;
+
+            if (isMusic)
+            {
+                ReportProgress("separating", "Separating vocals from music\u2026", 25);
+                audioForWhisper = await _sourceSeparation.SeparateVocalsAsync(extractedWav);
+                ct.ThrowIfCancellationRequested();
+                cleanupVocals = true;
+                ReportProgress("separating", "Vocals separated", 55);
+            }
+
+            ReportProgress("transcribing", "Transcribing\u2026", 60);
+            var result = await _whisper.TranscribeAsync(audioForWhisper, GetSelectedLanguage(), fileMode: true);
+            ct.ThrowIfCancellationRequested();
+            ReportProgress("transcribing", "Transcription complete", 95);
+
+            string text = result.Text.Trim();
+            await PublishTranscriptionAsync(text, result.Language, result.LanguageProbability, "file");
+
+            ReportProgress("done", "Done", 100);
+            _overlay?.Hide();
+
+            // Cleanup temp files
+            try { File.Delete(extractedWav); } catch { }
+            if (cleanupVocals)
+            {
+                try
+                {
+                    string? parentDir = Path.GetDirectoryName(audioForWhisper);
+                    if (parentDir is not null)
+                    {
+                        string? demucsRoot = Path.GetDirectoryName(parentDir);
+                        string tempDir = Path.GetTempPath().TrimEnd('\\');
+                        if (demucsRoot is not null &&
+                            demucsRoot.StartsWith(tempDir, StringComparison.OrdinalIgnoreCase))
+                            Directory.Delete(demucsRoot, recursive: true);
+                    }
+                }
+                catch { }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            Post(new { type = "file_transcribe_progress", status = "cancelled", message = "Cancelled", progress = 0, elapsed = sw.Elapsed.TotalSeconds });
+        }
+        catch (Exception ex)
+        {
+            Post(new { type = "file_transcribe_progress", status = "error", message = ex.Message, progress = 0, elapsed = sw.Elapsed.TotalSeconds });
+            Post(new { type = "log", message = $"File transcription error: {ex.Message}" });
+            _sfx.PlayError();
+        }
+        finally
+        {
+            CancellationTokenSource? old;
+            lock (_ctsLock)
+            {
+                old = _fileTranscribeCts;
+                _fileTranscribeCts = null;
+            }
+            old?.Dispose();
+            try { _fileTranscribeGate.Release(); } catch (ObjectDisposedException) { }
+        }
+    }
+
+    public void OpenFileAndTranscribe(bool isMusic = false)
+    {
+        var dialog = new Microsoft.Win32.OpenFileDialog
+        {
+            Title = isMusic ? "Select music audio or video file to transcribe" : "Select speech audio or video file to transcribe",
+            Filter = "Media files (*.wav;*.mp3;*.flac;*.ogg;*.m4a;*.aac;*.opus;*.mp4;*.mkv;*.avi;*.mov;*.webm;*.flv;*.wmv)|*.wav;*.mp3;*.flac;*.ogg;*.m4a;*.aac;*.opus;*.mp4;*.mkv;*.avi;*.mov;*.webm;*.flv;*.wmv|All files (*.*)|*.*",
+            CheckFileExists = true,
+            Multiselect = false,
+        };
+
+        if (dialog.ShowDialog() == true)
+        {
+            _ = TranscribeFileAsync(dialog.FileName, isMusic);
+        }
+    }
+
+    private static string ResolvePython()
+    {
+        string[] candidates =
+        [
+            RuntimePaths.UserVenvPython,
+            Path.Combine(Environment.CurrentDirectory, ".venv", "Scripts", "python.exe"),
+            Path.Combine(AppContext.BaseDirectory, ".venv", "Scripts", "python.exe"),
+        ];
+        return candidates.FirstOrDefault(File.Exists)
+            ?? throw new FileNotFoundException("Python interpreter not found. Run setup first.");
+    }
 
     private void OnWebMessage(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
@@ -286,14 +431,15 @@ public sealed class UIBridge : IDisposable
                         Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, loaded = true, model = GetCompositeName(), device = _loadedDevice, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId });
                         Post(new { type = "model_loaded", model = GetCompositeName(), device = _loadedDevice, note = ModelNotes.GetModelNote(_loadedModel, _loadedDevice) });
                     }
-                    else
+                    else if (!_healthCheckRunning)
                     {
+                        _healthCheckRunning = true;
                         _ = RunHealthCheckAsync();
                     }
                     break;
 
                 case "setup_runtime":
-                    _ = RunHealthCheckAsync();
+                    _ = RunAutoSetupAndReportAsync();
                     break;
 
                 case "cancel_download":
@@ -305,6 +451,23 @@ public sealed class UIBridge : IDisposable
                         _setupCts?.Cancel();
                     Post(new { type = "log", message = "Download cancelled" });
                     SendModelsStatus();
+                    break;
+                }
+
+                case "pause_download":
+                {
+                    string pauseModel = GetStringProp(root, "model");
+                    if (!string.IsNullOrEmpty(pauseModel))
+                        _whisper.PauseDownload(pauseModel);
+                    SendModelsStatus();
+                    break;
+                }
+
+                case "resume_download":
+                {
+                    string resumeModel = GetStringProp(root, "model");
+                    if (!string.IsNullOrEmpty(resumeModel))
+                        _ = _whisper.DownloadModelAsync(resumeModel, CancellationToken.None);
                     break;
                 }
 
@@ -376,6 +539,7 @@ public sealed class UIBridge : IDisposable
                         _selectedLanguage = GetStringProp(root, "value", "en");
                         SettingsStore.Language = _selectedLanguage;
                         SettingsStore.Save();
+                        Post(new { type = "settings", settings = new { language = _selectedLanguage } });
                     }
                     else if (settingKey == "theme")
                     {
@@ -447,42 +611,7 @@ public sealed class UIBridge : IDisposable
                 case "pick_directory":
                 {
                     string purpose = GetStringProp(root, "purpose");
-                    // Use interactive folder picker on the UI thread
-                    _ = _webView.Dispatcher.InvokeAsync(async () =>
-                    {
-                        try
-                        {
-                            // Import Windows Forms for folder picker, or use WPF's
-                            // Since we're in WPF, use FolderBrowserDialog from WinForms
-                            var dialog = new System.Windows.Forms.FolderBrowserDialog();
-                            dialog.Description = purpose == "models"
-                                ? "Select models storage directory"
-                                : "Select a directory";
-                            dialog.UseDescriptionForTitle = true;
-
-                            // Show dialog on UI thread
-                            if (System.Windows.Application.Current?.Dispatcher is { } dispatcher)
-                            {
-                                await dispatcher.BeginInvoke(() =>
-                                {
-                                    var result = dialog.ShowDialog();
-                                    if (result == System.Windows.Forms.DialogResult.OK)
-                                    {
-                                        Post(new { type = "directory_picked", path = dialog.SelectedPath });
-                                    }
-                                    else
-                                    {
-                                        Post(new { type = "directory_picked", path = (string?)null });
-                                    }
-                                });
-                            }
-                        }
-                        catch (Exception ex)
-                        {
-                            Post(new { type = "log", message = $"Folder picker error: {ex.Message}" });
-                            Post(new { type = "directory_picked", path = (string?)null });
-                        }
-                    });
+                    _ = ShowFolderPickerAsync(purpose);
                     break;
                 }
 
@@ -571,6 +700,64 @@ public sealed class UIBridge : IDisposable
                     SendModelsStatus();
                     break;
 
+                case "transcribe_file":
+                {
+                    bool musicMode = GetBoolProp(root, "musicMode", false);
+                    OpenFileAndTranscribe(musicMode);
+                    break;
+                }
+
+                case "transcribe_file_path":
+                {
+                    string filePath = GetStringProp(root, "path");
+                    bool musicMode = GetBoolProp(root, "musicMode", false);
+                    if (!string.IsNullOrEmpty(filePath) && File.Exists(filePath))
+                        _ = TranscribeFileAsync(filePath, musicMode);
+                    else
+                        Post(new { type = "file_transcribe_progress", status = "error", message = "File not found." });
+                    break;
+                }
+
+                case "transcribe_dropped_file":
+                {
+                    string base64Data = GetStringProp(root, "data");
+                    string fileName = GetStringProp(root, "name", "recording.wav");
+                    if (!string.IsNullOrEmpty(base64Data))
+                    {
+                        try
+                        {
+                            byte[] bytes = Convert.FromBase64String(base64Data);
+                            string tempDir = Path.Combine(Path.GetTempPath(), "winwhisper");
+                            Directory.CreateDirectory(tempDir);
+                            string tempFile = Path.Combine(tempDir, $"dropped-{Guid.NewGuid():N}-{fileName}");
+                            File.WriteAllBytes(tempFile, bytes);
+                            _ = TranscribeFileAsync(tempFile, false).ContinueWith(_ =>
+                            {
+                                try { File.Delete(tempFile); } catch { }
+                            }, CancellationToken.None, TaskContinuationOptions.None, TaskScheduler.Default);
+                        }
+                        catch (Exception ex)
+                        {
+                            Post(new { type = "file_transcribe_progress", status = "error", message = ex.Message });
+                        }
+                    }
+                    break;
+                }
+
+                case "cancel_file_transcribe":
+                {
+                    CancellationTokenSource? old;
+                    lock (_ctsLock)
+                    {
+                        old = _fileTranscribeCts;
+                        _fileTranscribeCts = null;
+                    }
+                    old?.Cancel();
+                    old?.Dispose();
+                    Post(new { type = "file_transcribe_progress", status = "cancelled", message = "Cancelled", progress = 0, elapsed = 0 });
+                    break;
+                }
+
                 default:
                     Post(new { type = "log", message = $"Unknown message type: {type}" });
                     break;
@@ -585,6 +772,21 @@ public sealed class UIBridge : IDisposable
     private static string GetStringProp(JsonElement root, string key, string fallback = "")
     {
         return root.TryGetProperty(key, out var prop) ? prop.GetString() ?? fallback : fallback;
+    }
+
+    private static bool GetBoolProp(JsonElement root, string key, bool fallback = false)
+    {
+        if (root.TryGetProperty(key, out var prop))
+        {
+            if (prop.ValueKind == JsonValueKind.True) return true;
+            if (prop.ValueKind == JsonValueKind.False) return false;
+            if (prop.ValueKind == JsonValueKind.String)
+            {
+                string s = prop.GetString() ?? "";
+                if (bool.TryParse(s, out bool result)) return result;
+            }
+        }
+        return fallback;
     }
 
     private static int KeyNameToVkCode(string keyName)
@@ -620,18 +822,17 @@ public sealed class UIBridge : IDisposable
 
     private async Task RunHealthCheckAsync()
     {
-        // Load persisted settings
-        SettingsStore.Load();
-        if (!string.IsNullOrEmpty(SettingsStore.ModelDirectory))
-            RuntimePaths.ModelsRoot = SettingsStore.ModelDirectory;
-        _selectedLanguage = SettingsStore.Language;
-        _autoPasteEnabled = SettingsStore.AutoPasteEnabled;
-        _sfx.Enabled = SettingsStore.SoundEffectsEnabled;
-        _audio.DeviceId = SettingsStore.AudioDeviceId;
-        if (SettingsStore.StartOnBoot) _startup.SetEnabled(true);
-
         try
         {
+            // Load persisted settings
+            SettingsStore.Load();
+            if (!string.IsNullOrEmpty(SettingsStore.ModelDirectory))
+                RuntimePaths.ModelsRoot = SettingsStore.ModelDirectory;
+            _selectedLanguage = SettingsStore.Language;
+            _autoPasteEnabled = SettingsStore.AutoPasteEnabled;
+            _sfx.Enabled = SettingsStore.SoundEffectsEnabled;
+            _audio.DeviceId = SettingsStore.AudioDeviceId;
+            if (SettingsStore.StartOnBoot) _startup.SetEnabled(true);
             bool ready = await _runtimeSetup.IsReadyAsync();
 
             if (!ready)
@@ -647,7 +848,9 @@ public sealed class UIBridge : IDisposable
             }
 
             // Unblock UI immediately — setup succeeded
-            Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, loaded = false, model = GetCompositeName(), device = _loadedDevice, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId });
+            // Detect GPU first so the init message carries the real device (not _loadedDevice, which stays "cpu" until a model loads)
+            var recommended = SttRuntimeOptions.RecommendedForThisPc;
+            Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, loaded = false, model = GetCompositeName(), device = recommended.Provider, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId });
             Post(new { type = "settings", settings = new {
                 startup = _startup.IsEnabled(),
                 language = _selectedLanguage,
@@ -657,7 +860,6 @@ public sealed class UIBridge : IDisposable
                 audio_device = _audio.DeviceId,
             } });
 
-            var recommended = SttRuntimeOptions.RecommendedForThisPc;
             Post(new { type = "log", message = $"Detected GPU: {recommended.Provider}. Recommended model: {recommended.Model}" });
 
             // Phase 2: Model loading — non-fatal if it fails (user can load manually later)
@@ -667,9 +869,13 @@ public sealed class UIBridge : IDisposable
         {
             SetModelError(ex.Message);
             Post(new { type = "log", message = $"Setup failed: {ex.Message}" });
-            Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, error = ex.Message, loaded = false, model = GetCompositeName(), device = _loadedDevice, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId });
+            Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, error = ex.Message, loaded = false, model = GetCompositeName(), device = SttRuntimeOptions.RecommendedForThisPc.Provider, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId });
             Post(new { type = "status_update", text = "Setup failed", variant = "error" });
             Post(new { type = "notification", title = "Startup failed", message = ex.Message, variant = "error" });
+        }
+        finally
+        {
+            _healthCheckRunning = false;
         }
     }
 
@@ -687,6 +893,7 @@ public sealed class UIBridge : IDisposable
             {
                 Post(new { type = "log", message = $"No {provider} models downloaded. Go to Models page to download one." });
                 Post(new { type = "status_update", text = "No model downloaded", variant = "warning" });
+                SendModelsStatus();
                 return;
             }
 
@@ -771,6 +978,23 @@ public sealed class UIBridge : IDisposable
         catch (OperationCanceledException)
         {
             Post(new { type = "log", message = "Setup was cancelled" });
+        }
+    }
+
+    private async Task RunAutoSetupAndReportAsync()
+    {
+        await RunAutoSetupAsync();
+
+        bool gpuOk = await _runtimeSetup.IsGpuProviderReadyAsync();
+        bool ready = await _runtimeSetup.IsReadyAsync();
+
+        if (ready)
+        {
+            Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, loaded = false, model = GetCompositeName(), device = _gpuDetect.Detect().provider, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId });
+        }
+        else
+        {
+            Post(new { type = "init", darkMode = _detectDarkMode(), ready = false, error = "Setup still failed. Check the logs and try again." });
         }
     }
 
@@ -915,12 +1139,36 @@ public sealed class UIBridge : IDisposable
             }
         }
 
+        // Demucs model — always shown
+        {
+            bool demucsDownloaded = _whisper.IsModelDownloaded("demucs", "htdemucs");
+            models.Add(new
+            {
+                name = "demucs-htdemucs",
+                displayName = "Demucs Source Separator",
+                size = 80_000_000L,
+                downloaded = demucsDownloaded,
+                loaded = false,
+                provider = "demucs"
+            });
+        }
+
         Post(new { type = "models_status", models });
     }
 
     private async Task LoadModelAsync(string compositeName)
     {
         var (model, device) = SttRuntimeOptions.FromCompositeName(compositeName);
+
+        if ((device is "dml" or "cuda") && !await _runtimeSetup.IsGpuProviderReadyAsync())
+        {
+            string msg = $"GPU packages not installed. Run Setup, then try again. (Expected provider: {device})";
+            SetModelError(msg);
+            Post(new { type = "log", message = $"Model load failed: {msg}" });
+            Post(new { type = "status_update", text = "GPU not ready", variant = "error" });
+            return;
+        }
+
         Post(new { type = "status_update", text = "Loading model\u2026", variant = "warning" });
         Post(new { type = "log", message = $"Loading model {model} on {device}\u2026" });
 
@@ -957,6 +1205,7 @@ public sealed class UIBridge : IDisposable
             if (!isPartial)
             {
                 Post(new { type = "log", message = "No speech detected" });
+                Post(new { type = "transcription_result", text = "", meta = "No speech detected" , isPartial = false });
                 _overlay?.Hide();
             }
             return;
@@ -987,10 +1236,10 @@ public sealed class UIBridge : IDisposable
         var entry = new TranscriptionHistoryEntry(DateTime.Now, text, language, confidence, source, action);
         _history.Add(entry);
         _overlay?.ShowDone("Done");
-            Post(new { type = "history_entry", entry = new { action = TranscriptionHistory.ActionLabel(action), text, timestamp = entry.Timestamp.ToString("g"), ts = entry.Timestamp.ToString("O"), source } });
-        }
+        Post(new { type = "history_entry", entry = new { action = TranscriptionHistory.ActionLabel(action), text, timestamp = entry.Timestamp.ToString("g"), ts = entry.Timestamp.ToString("O"), source } });
+    }
 
-        private static SttRuntimeOptions BuildRuntimeOptions(string compositeName)
+    private static SttRuntimeOptions BuildRuntimeOptions(string compositeName)
     {
         var (model, device) = SttRuntimeOptions.FromCompositeName(compositeName);
 
@@ -1016,6 +1265,38 @@ public sealed class UIBridge : IDisposable
         try { File.AppendAllText(RuntimePaths.LogPath, $"{message}{Environment.NewLine}"); } catch { }
     }
 
+    private async Task ShowFolderPickerAsync(string purpose)
+    {
+        await _webView.Dispatcher.InvokeAsync(() =>
+        {
+            try
+            {
+                var dialog = new System.Windows.Forms.FolderBrowserDialog();
+                dialog.Description = purpose == "models"
+                    ? "Select models storage directory"
+                    : "Select a directory";
+                dialog.UseDescriptionForTitle = true;
+
+                if (System.Windows.Application.Current?.Dispatcher is { } dispatcher)
+                {
+                    dispatcher.Invoke(() =>
+                    {
+                        var result = dialog.ShowDialog();
+                        if (result == System.Windows.Forms.DialogResult.OK)
+                            Post(new { type = "directory_picked", path = dialog.SelectedPath });
+                        else
+                            Post(new { type = "directory_picked", path = (string?)null });
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                Post(new { type = "log", message = $"Folder picker error: {ex.Message}" });
+                Post(new { type = "directory_picked", path = (string?)null });
+            }
+        });
+    }
+
     public void Dispose()
     {
         _disposed = true;
@@ -1039,5 +1320,15 @@ public sealed class UIBridge : IDisposable
         _phoneMic.RecordingChanged -= _onPhoneMicRecording;
         _whisper.DownloadProgress -= _onDownloadProgress;
         _runtimeSetup.StepsChanged -= _onSetupSteps;
+
+        CancellationTokenSource? oldCts;
+        lock (_ctsLock)
+        {
+            oldCts = _fileTranscribeCts;
+            _fileTranscribeCts = null;
+        }
+        oldCts?.Cancel();
+        oldCts?.Dispose();
+        try { _fileTranscribeGate.Dispose(); } catch { }
     }
 }

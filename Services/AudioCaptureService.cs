@@ -5,6 +5,7 @@ namespace WinWhisperFlow.Services;
 
 public sealed class AudioCaptureService : IDisposable
 {
+    ~AudioCaptureService() => Stop();
     private const int SpectrumFftSize = 512;
     private const int SpectrumBands = 5;
     private static readonly (int Low, int High)[] SpectrumBandRanges = [
@@ -46,7 +47,7 @@ public sealed class AudioCaptureService : IDisposable
         for (int i = 0; i < names.Length; i++)
         {
             try { names[i] = WaveInEvent.GetCapabilities(i).ProductName; }
-            catch { names[i] = $"Device {i}"; }
+            catch (Exception) { names[i] = $"Device {i}"; }
         }
         return names;
     }
@@ -122,10 +123,10 @@ public sealed class AudioCaptureService : IDisposable
     private void OnDataAvailable(object? sender, WaveInEventArgs e)
     {
         float level = CalculateRmsLevel(e.Buffer, e.BytesRecorded);
-        _peakLevel = Math.Max(_peakLevel, level);
 
         lock (_gate)
         {
+            _peakLevel = Math.Max(_peakLevel, level);
             _writer?.Write(e.Buffer, 0, e.BytesRecorded);
         }
 

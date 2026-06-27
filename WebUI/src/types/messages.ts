@@ -49,6 +49,15 @@ export interface ModelInfo {
   provider: string;
 }
 
+export interface FileTranscribeProgress {
+  type: 'file_transcribe_progress';
+  status: 'picking' | 'extracting' | 'analyzing' | 'separating' | 'transcribing' | 'done' | 'error' | 'cancelled';
+  message: string;
+  progress?: number;
+  elapsed?: number;
+  fileName?: string;
+}
+
 export type S2CMessage =
   | InitMessage
   | SetupProgress
@@ -67,7 +76,8 @@ export type S2CMessage =
   | { type: 'notification'; title: string; message: string; variant: 'info' | 'warning' | 'error' }
   | { type: 'settings'; settings: Record<string, unknown> }
   | { type: 'clear_history' }
-  | { type: 'directory_picked'; path: string | null };
+  | { type: 'directory_picked'; path: string | null }
+  | FileTranscribeProgress;
 
 export interface HistoryEntry {
   action: string;
@@ -88,10 +98,16 @@ export type C2SMessage =
   | { type: 'download_model'; model: string }
   | { type: 'delete_model'; model: string }
   | { type: 'cancel_download'; model: string }
+  | { type: 'pause_download'; model: string }
+  | { type: 'resume_download'; model: string }
   | { type: 'get_models_status' }
   | { type: 'get_model_note'; model: string }
   | { type: 'setup_runtime' }
   | { type: 'delete_history_entry'; ts: string; text: string }
   | { type: 'pick_directory'; purpose: string }
   | { type: 'open_directory'; path: string }
-  | { type: 'open_url'; url: string };
+  | { type: 'open_url'; url: string }
+  | { type: 'transcribe_file'; musicMode?: boolean }
+  | { type: 'transcribe_file_path'; path: string; musicMode?: boolean }
+  | { type: 'transcribe_dropped_file'; data: string; name: string }
+  | { type: 'cancel_file_transcribe' };
