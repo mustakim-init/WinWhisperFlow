@@ -20,6 +20,15 @@ interface AppState {
   lastMeta: string;
   partialTranscript: string;
   partialMeta: string;
+  voiceTranscript: string;
+  voiceMeta: string;
+  voicePartialTranscript: string;
+  voicePartialMeta: string;
+  fileTranscript: string;
+  fileMeta: string;
+  musicTranscript: string;
+  musicMeta: string;
+  fileMusicMode: boolean;
   statusText: string | null;
   statusVariant: 'success' | 'warning' | 'error';
   history: HistoryEntry[];
@@ -78,6 +87,15 @@ let state: AppState = {
   fileProgress: 0,
   fileStage: '',
   fileElapsed: 0,
+  voiceTranscript: '',
+  voiceMeta: '',
+  voicePartialTranscript: '',
+  voicePartialMeta: '',
+  fileTranscript: '',
+  fileMeta: '',
+  musicTranscript: '',
+  musicMeta: '',
+  fileMusicMode: false,
 };
 
 const listeners = new Set<Listener>();
@@ -128,6 +146,11 @@ export function setFileProgress(p: number) { set({ fileProgress: p }); }
 export function setFileStage(s: string) { set({ fileStage: s }); }
 export function setFileElapsed(e: number) { set({ fileElapsed: e }); }
 export function resetFileState() { set({ fileTranscribing: false, fileName: null, fileProgress: 0, fileStage: '', fileElapsed: 0 }); }
+export function setVoiceTranscript(t: string, meta: string) { set({ voiceTranscript: t, voiceMeta: meta, voicePartialTranscript: '', voicePartialMeta: '' }); }
+export function setVoicePartialTranscript(t: string, meta: string) { set({ voicePartialTranscript: t, voicePartialMeta: meta }); }
+export function setFileTranscript(t: string, meta: string) { set({ fileTranscript: t, fileMeta: meta }); }
+export function setMusicTranscript(t: string, meta: string) { set({ musicTranscript: t, musicMeta: meta }); }
+export function setFileMusicMode(v: boolean) { set({ fileMusicMode: v }); }
 
 export function addHistory(entry: HistoryEntry) {
   set({ history: [entry, ...state.history] });

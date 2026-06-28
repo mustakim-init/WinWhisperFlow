@@ -106,7 +106,10 @@ def find_onnx_model_files(model_name):
     prefix = model_name
 
     encoder = _find_file(model_dir, f"{prefix}-encoder.onnx")
-    decoder = _find_file(model_dir, f"{prefix}-decoder.onnx")
+    # Prefer INT8 decoder for CPU execution performance
+    decoder = _find_file(model_dir, f"{prefix}-decoder.int8.onnx")
+    if not decoder:
+        decoder = _find_file(model_dir, f"{prefix}-decoder.onnx")
     tokens = _find_file(model_dir, f"{prefix}-tokens.txt")
 
     if encoder and decoder and tokens:
@@ -179,7 +182,7 @@ class WhisperONNXModel:
         session_opts.intra_op_num_threads = int(
             os.environ.get("WINWHISPER_CPU_THREADS", "4")
         )
-        session_opts.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_BASIC
+        session_opts.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_ALL
         session_opts.enable_mem_pattern = False
 
         self.encoder = onnxruntime.InferenceSession(
@@ -191,7 +194,7 @@ class WhisperONNXModel:
         decoder_opts.graph_optimization_level = onnxruntime.GraphOptimizationLevel.ORT_ENABLE_BASIC
         decoder_opts.enable_mem_pattern = False
         self.decoder = onnxruntime.InferenceSession(
-            decoder_path, sess_options=decoder_opts, providers=providers,
+            decoder_path, sess_options=decoder_opts, providers=["CPUExecutionProvider"],
         )
 
         meta = self.encoder.get_modelmeta().custom_metadata_map
@@ -253,11 +256,19 @@ class WhisperONNXModel:
         logits[self.no_speech_id] = float("-inf")
         logits[self.translate_id] = float("-inf")
 
-    def transcribe(self, audio_path, language="en",
-                   no_speech_threshold=0.72, log_prob_threshold=-0.8):
-        audio, sr = load_audio(audio_path)
-        mel = compute_features(audio, sr, self.n_mels, self.expected_mel_frames)
+    def _decode_tokens(self, results):
+        raw = b""
+        for tid in results:
+            token_str = self.tokens.get(tid, "")
+            if token_str:
+                try:
+                    raw += base64.b64decode(token_str)
+                except Exception:
+                    pass
+        return raw.decode("utf-8", errors="replace").strip()
 
+    def _transcribe_chunk(self, audio, language):
+        mel = compute_features(audio, SAMPLE_RATE, self.n_mels, self.expected_mel_frames)
         cross_k, cross_v = self.run_encoder(mel)
 
         sot_seq = list(self.sot_sequence)
@@ -293,17 +304,48 @@ class WhisperONNXModel:
             self.suppress_tokens(logits_vec, is_initial=False)
             next_token = int(logits_vec.argmax())
 
-        raw = b""
-        for tid in results:
-            token_str = self.tokens.get(tid, "")
-            if token_str:
-                try:
-                    raw += base64.b64decode(token_str)
-                except Exception:
-                    pass
+        return self._decode_tokens(results)
 
-        text = raw.decode("utf-8", errors="replace").strip()
-        return text
+    def _merge_text(self, prev_text, curr_text):
+        prev_words = prev_text.split()
+        curr_words = curr_text.split()
+        if not prev_words or not curr_words:
+            return (prev_text + " " + curr_text).strip()
+        # Normalize for comparison: lowercase, strip punctuation
+        def norm(w):
+            return w.lower().strip(""".,!?;:-'"()[]{}""")
+        max_overlap = min(len(curr_words), len(prev_words), 8)
+        for n in range(max_overlap, 0, -1):
+            tail = [norm(w) for w in prev_words[-n:]]
+            head = [norm(w) for w in curr_words[:n]]
+            if tail == head:
+                return " ".join(prev_words + curr_words[n:])
+        return prev_text + " " + curr_text
+
+    def transcribe(self, audio_path, language="en",
+                   no_speech_threshold=0.72, log_prob_threshold=-0.8):
+        audio, sr = load_audio(audio_path)
+
+        CHUNK_SAMPLES = self.expected_mel_frames * HOP_LENGTH
+        OVERLAP_SAMPLES = int(1.5 * SAMPLE_RATE)
+        STRIDE = CHUNK_SAMPLES - OVERLAP_SAMPLES
+
+        if len(audio) <= CHUNK_SAMPLES:
+            return self._transcribe_chunk(audio, language)
+
+        texts = []
+        for start in range(0, len(audio), STRIDE):
+            end = min(start + CHUNK_SAMPLES, len(audio))
+            chunk = audio[start:end]
+            if len(chunk) < CHUNK_SAMPLES:
+                chunk = np.pad(chunk, (0, CHUNK_SAMPLES - len(chunk)))
+            texts.append(self._transcribe_chunk(chunk, language))
+
+        result = texts[0]
+        for i in range(1, len(texts)):
+            result = self._merge_text(result, texts[i])
+
+        return result
 
 
 def main():

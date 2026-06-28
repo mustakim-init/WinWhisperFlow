@@ -1,6 +1,6 @@
 import { AnimatePresence, motion } from 'framer-motion';
 import { Check, Clock, Copy, FileText, Loader2, Mic, Music, RefreshCw, Square, Upload, X } from 'lucide-react';
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Badge } from '../components/ui/Badge';
 import { Button } from '../components/ui/Button';
 import { Progress } from '../components/ui/Progress';
@@ -8,6 +8,7 @@ import { Select } from '../components/ui/Select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/Tabs';
 import { send } from '../bridge/ipc';
 import { useStore } from '../hooks/useStore';
+import { setFileMusicMode, setFileTranscript, setMusicTranscript, setVoiceTranscript } from '../lib/store';
 
 const languageOptions = [
   { label: 'Auto detect', value: 'auto' },
@@ -63,25 +64,47 @@ function FileTranscribeProgress() {
 function FileResultView({ musicMode }: { musicMode: boolean }) {
   const store = useStore();
   const [copied, setCopied] = useState(false);
+  const storeField = musicMode ? store.musicTranscript : store.fileTranscript;
+  const [editText, setEditText] = useState(() => storeField);
+  const editRef = useRef(editText);
+  editRef.current = editText;
 
-  const handleCopy = (text: string) => {
-    send({ type: 'copy_text', text });
+  const handleCopy = () => {
+    send({ type: 'copy_text', text: editText });
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
 
-  const handleNewFile = () => send({ type: 'transcribe_file', musicMode });
+  const handleNewFile = () => {
+    setFileMusicMode(musicMode);
+    send({ type: 'transcribe_file', musicMode });
+  };
+
+  useEffect(() => {
+    return () => {
+      const current = editRef.current;
+      if (musicMode) {
+        if (current !== store.musicTranscript) {
+          setMusicTranscript(current, store.musicMeta);
+        }
+      } else {
+        if (current !== store.fileTranscript) {
+          setFileTranscript(current, store.fileMeta);
+        }
+      }
+    };
+  }, []);
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
       <div className="flex-1 min-h-0 rounded-xl border border-border bg-muted/15 overflow-hidden flex flex-col">
         <div className="flex items-center justify-between px-6 py-3 border-b border-border bg-card/50 shrink-0">
           <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-            File Transcription
+            {musicMode ? 'Music Transcription' : 'File Transcription'}
           </h2>
-          {store.lastTranscript && (
+          {storeField && (
             <div className="flex items-center gap-2">
-              <Button variant="ghost" size="sm" onClick={() => handleCopy(store.lastTranscript)} className="gap-1.5 h-7 text-xs text-muted-foreground hover:text-foreground">
+              <Button variant="ghost" size="sm" onClick={handleCopy} className="gap-1.5 h-7 text-xs text-muted-foreground hover:text-foreground">
                 {copied ? <Check size={12} /> : <Copy size={12} />} {copied ? 'Copied!' : 'Copy'}
               </Button>
               <Button variant="ghost" size="sm" onClick={handleNewFile} className="gap-1.5 h-7 text-xs text-muted-foreground hover:text-foreground">
@@ -90,8 +113,14 @@ function FileResultView({ musicMode }: { musicMode: boolean }) {
             </div>
           )}
         </div>
-        <div className="flex-1 overflow-y-auto text-[15px] leading-relaxed whitespace-pre-wrap select-text p-6 text-foreground font-sans scrollbar-hide">
-          {store.lastTranscript || (
+        <div className="flex-1 flex flex-col min-h-0 p-6">
+          {storeField ? (
+            <textarea
+              value={editText}
+              onChange={(e) => setEditText(e.target.value)}
+              className="flex-1 w-full bg-transparent border-none outline-none resize-none text-[15px] leading-relaxed font-sans text-foreground"
+            />
+          ) : (
             <span className="text-muted-foreground italic">No transcription yet. Select a file to begin.</span>
           )}
         </div>
@@ -103,10 +132,14 @@ function FileResultView({ musicMode }: { musicMode: boolean }) {
 function FileImportTab({ musicMode }: { musicMode: boolean }) {
   const store = useStore();
   const [dragOver, setDragOver] = useState(false);
+  const hasResult = musicMode ? !!store.musicTranscript : !!store.fileTranscript;
 
   const demucsDownloaded = store.availableModels.find((m) => m.name === 'demucs-htdemucs')?.downloaded ?? false;
 
-  const handleOpenFile = () => send({ type: 'transcribe_file', musicMode });
+  const handleOpenFile = () => {
+    setFileMusicMode(musicMode);
+    send({ type: 'transcribe_file', musicMode });
+  };
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -126,19 +159,20 @@ function FileImportTab({ musicMode }: { musicMode: boolean }) {
     setDragOver(false);
     const file = e.dataTransfer.files?.[0];
     if (!file) return;
+    setFileMusicMode(musicMode);
     const reader = new FileReader();
     reader.onload = () => {
       const base64 = (reader.result as string)?.split(',')[1] ?? '';
       send({ type: 'transcribe_dropped_file', data: base64, name: file.name });
     };
     reader.readAsDataURL(file);
-  }, []);
+  }, [musicMode]);
 
   if (store.fileTranscribing) {
     return <FileTranscribeProgress />;
   }
 
-  if (store.lastTranscript) {
+  if (hasResult) {
     return <FileResultView musicMode={musicMode} />;
   }
 
@@ -200,12 +234,33 @@ function VoiceEmptyState() {
 function VoiceTranscriptView() {
   const store = useStore();
   const [copied, setCopied] = useState(false);
+  const [editText, setEditText] = useState(() => store.voiceTranscript);
+  const editRef = useRef(editText);
+  const wasListening = useRef(store.isListening);
+  editRef.current = editText;
 
-  const displayText = store.isListening ? store.partialTranscript : store.lastTranscript;
-  const metaText = store.isListening ? store.partialMeta : store.lastMeta;
+  const metaText = store.isListening ? store.voicePartialMeta : store.voiceMeta;
 
-  const handleCopy = (text: string) => {
-    send({ type: 'copy_text', text });
+  // Sync editText from store when a new transcription arrives after recording stops
+  useEffect(() => {
+    if (wasListening.current && !store.isListening) {
+      setEditText(store.voiceTranscript);
+    }
+    wasListening.current = store.isListening;
+  }, [store.isListening, store.voiceTranscript]);
+
+  // Persist edits to store on unmount (tab switch)
+  useEffect(() => {
+    return () => {
+      const current = editRef.current;
+      if (current !== store.voiceTranscript) {
+        setVoiceTranscript(current, store.voiceMeta);
+      }
+    };
+  }, []);
+
+  const handleCopy = () => {
+    send({ type: 'copy_text', text: editText });
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
@@ -223,21 +278,29 @@ function VoiceTranscriptView() {
           <h2 className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
             {store.isListening ? 'Recording Live' : 'Voice Transcription'}
           </h2>
-          {store.lastTranscript && !store.isListening && (
-            <Button variant="ghost" size="sm" onClick={() => handleCopy(store.lastTranscript)} className="gap-1.5 h-7 text-xs text-muted-foreground hover:text-foreground">
+          {store.voiceTranscript && !store.isListening && (
+            <Button variant="ghost" size="sm" onClick={handleCopy} className="gap-1.5 h-7 text-xs text-muted-foreground hover:text-foreground">
               {copied ? <Check size={12} /> : <Copy size={12} />} {copied ? 'Copied!' : 'Copy'}
             </Button>
           )}
         </div>
-        <div className="flex-1 overflow-y-auto text-[15px] leading-relaxed whitespace-pre-wrap select-text p-6 text-foreground font-sans scrollbar-hide">
-          {displayText || (
-            <span className="text-muted-foreground italic">Transcription appears here...</span>
-          )}
-          {store.isListening && (
-            <motion.span
-              animate={{ opacity: [1, 0] }}
-              transition={{ repeat: Infinity, duration: 0.8 }}
-              className="inline-block w-0.5 h-4 bg-accent ml-1 align-middle"
+        <div className="flex-1 flex flex-col min-h-0 p-6">
+          {store.isListening ? (
+            <div className="overflow-y-auto text-[15px] leading-relaxed whitespace-pre-wrap select-text text-foreground font-sans">
+              {store.voicePartialTranscript || (
+                <span className="text-muted-foreground italic">Transcription appears here...</span>
+              )}
+              <motion.span
+                animate={{ opacity: [1, 0] }}
+                transition={{ repeat: Infinity, duration: 0.8 }}
+                className="inline-block w-0.5 h-4 bg-accent ml-1 align-middle"
+              />
+            </div>
+          ) : (
+            <textarea
+              value={editText}
+              onChange={(e) => setEditText(e.target.value)}
+              className="flex-1 w-full bg-transparent border-none outline-none resize-none text-[15px] leading-relaxed font-sans text-foreground"
             />
           )}
         </div>
@@ -253,6 +316,7 @@ function VoiceTranscriptView() {
 
 export function DictatePage() {
   const store = useStore();
+  const [activeTab, setActiveTab] = useState('voice');
   const barSeeds = React.useMemo(() => [0.7, 0.9, 0.6, 1.0, 0.8], []);
 
   const downloadedModels = store.availableModels
@@ -272,7 +336,13 @@ export function DictatePage() {
     send({ type: 'set_setting', key: 'language', value: lang });
   };
 
-  const showVoiceContent = store.isListening || store.lastTranscript;
+  const showVoiceContent = store.isListening || !!store.voiceTranscript;
+
+  const handleImportFile = () => {
+    const musicMode = activeTab === 'music';
+    setFileMusicMode(musicMode);
+    send({ type: 'transcribe_file', musicMode });
+  };
 
   return (
     <div className="flex flex-col h-full min-h-0 relative">
@@ -280,7 +350,7 @@ export function DictatePage() {
       <h1 className="shrink-0 pt-8 pb-4 text-2xl font-bold">Transcribe</h1>
 
       {/* Tabs root fills remaining space */}
-      <Tabs defaultValue="voice" className="flex flex-col flex-1 min-h-0">
+      <Tabs defaultValue="voice" onValueChange={setActiveTab} className="flex flex-col flex-1 min-h-0">
         <TabsList className="shrink-0">
           <TabsTrigger value="voice" className="flex items-center gap-1.5">
             <Mic size={14} /> Voice
@@ -312,58 +382,71 @@ export function DictatePage() {
       {/* Floating bottom control bar */}
       <div className="absolute bottom-0 left-0 right-0 z-20 pb-4 px-2 pointer-events-none">
         <div className="pointer-events-auto mx-auto max-w-2xl rounded-2xl border border-border bg-card/95 backdrop-blur-md shadow-lg px-4 py-3 flex items-center gap-3">
-          {/* Record button */}
-          <motion.button
-            onClick={handleToggle}
-            disabled={store.modelLoading || store.fileTranscribing}
-            className={`relative shrink-0 w-11 h-11 rounded-full flex items-center justify-center transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed ${
-              store.isListening
-                ? 'bg-red-500 text-white shadow-[0_0_16px_rgba(239,68,68,0.4)]'
-                : 'bg-accent text-accent-foreground shadow-[0_0_12px_hsl(var(--accent)/0.3)]'
-            }`}
-            whileTap={{ scale: 0.92 }}
-          >
-            {store.isListening ? (
-              <Square className="h-4 w-4 fill-current" />
-            ) : (
-              <Mic className="h-5 w-5" />
-            )}
-            {store.isListening && (
-              <motion.span
-                className="absolute inset-0 rounded-full bg-red-500"
-                animate={{ scale: [1, 1.2, 1], opacity: [0.3, 0, 0.3] }}
-                transition={{ repeat: Infinity, duration: 1.5, ease: 'easeInOut' }}
-              />
-            )}
-          </motion.button>
-
-          {/* Audio level bars — only when recording */}
-          <AnimatePresence>
-            {store.isListening && (
-              <motion.div
-                initial={{ opacity: 0, width: 0 }}
-                animate={{ opacity: 1, width: 'auto' }}
-                exit={{ opacity: 0, width: 0 }}
-                className="flex items-center gap-[2px] h-8 overflow-hidden"
+          {/* Action button — record for voice, import for file tabs */}
+          {activeTab === 'voice' ? (
+            <>
+              <motion.button
+                onClick={handleToggle}
+                disabled={store.modelLoading || store.fileTranscribing}
+                className={`relative shrink-0 w-11 h-11 rounded-full flex items-center justify-center transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed ${
+                  store.isListening
+                    ? 'bg-red-500 text-white shadow-[0_0_16px_rgba(239,68,68,0.4)]'
+                    : 'bg-accent text-accent-foreground shadow-[0_0_12px_hsl(var(--accent)/0.3)]'
+                }`}
+                whileTap={{ scale: 0.92 }}
               >
-                {barSeeds.map((seed, i) => (
-                  <motion.div
-                    key={i}
-                    className="w-[3px] rounded-full bg-accent"
-                    animate={{
-                      height: [6, 6 + (store.audioLevel * 16 + 3) * seed, 6],
-                    }}
-                    transition={{
-                      repeat: Infinity,
-                      duration: 0.4 + i * 0.08,
-                      ease: 'easeInOut',
-                      delay: i * 0.06,
-                    }}
+                {store.isListening ? (
+                  <Square className="h-4 w-4 fill-current" />
+                ) : (
+                  <Mic className="h-5 w-5" />
+                )}
+                {store.isListening && (
+                  <motion.span
+                    className="absolute inset-0 rounded-full bg-red-500"
+                    animate={{ scale: [1, 1.2, 1], opacity: [0.3, 0, 0.3] }}
+                    transition={{ repeat: Infinity, duration: 1.5, ease: 'easeInOut' }}
                   />
-                ))}
-              </motion.div>
-            )}
-          </AnimatePresence>
+                )}
+              </motion.button>
+
+              {/* Audio level bars — only when recording */}
+              <AnimatePresence>
+                {store.isListening && (
+                  <motion.div
+                    initial={{ opacity: 0, width: 0 }}
+                    animate={{ opacity: 1, width: 'auto' }}
+                    exit={{ opacity: 0, width: 0 }}
+                    className="flex items-center gap-[2px] h-8 overflow-hidden"
+                  >
+                    {barSeeds.map((seed, i) => (
+                      <motion.div
+                        key={i}
+                        className="w-[3px] rounded-full bg-accent"
+                        animate={{
+                          height: [6, 6 + (store.audioLevel * 16 + 3) * seed, 6],
+                        }}
+                        transition={{
+                          repeat: Infinity,
+                          duration: 0.4 + i * 0.08,
+                          ease: 'easeInOut',
+                          delay: i * 0.06,
+                        }}
+                      />
+                    ))}
+                  </motion.div>
+                )}
+              </AnimatePresence>
+            </>
+          ) : (
+            <Button
+              onClick={handleImportFile}
+              disabled={store.modelLoading || store.fileTranscribing}
+              className="shrink-0 gap-2"
+            >
+              <Upload size={16} />
+              Select {activeTab === 'music' ? 'Music' : 'Speech'} File
+            </Button>
+          )}
 
           {/* Divider */}
           <div className="w-px h-7 bg-border/60 shrink-0" />

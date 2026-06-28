@@ -3,10 +3,12 @@ import { onMessage, send } from '../bridge/ipc';
 import type { S2CMessage } from '../types/messages';
 import {
   setDevice, setGpuName, setAudioDevices, setAudioDeviceIndex, setModel, setIsListening, setIsReady, setModelLoaded as storeSetModelLoaded,
-  setModelNote, setAudioLevel, setLastTranscript, setStatus, addHistory, addLog, clearHistory,
+  setModelNote, setAudioLevel, setStatus, addHistory, addLog, clearHistory,
   setPhoneMicRunning, setPhoneMicUrl, setSetupSteps, setSetupOverall, setSetupError,
-  setLanguage, setModelLoading, setAvailableModels, setPartialTranscript,
+  setLanguage, setModelLoading, setAvailableModels,
   setFileTranscribing, setFileName, setFileProgress, setFileStage, setFileElapsed, resetFileState,
+  getState,
+  setVoiceTranscript, setVoicePartialTranscript, setFileTranscript, setMusicTranscript,
 } from '../lib/store';
 import { useUiStore } from '../stores/uiStore';
 import { useDownloadStore } from '../stores/downloadStore';
@@ -112,20 +114,28 @@ export function useGlobalBridgeSync() {
 
         case 'listening_status':
           setIsListening(msg.listening);
-          if (msg.listening) setPartialTranscript('', '');
+          if (msg.listening) setVoicePartialTranscript('', '');
           break;
 
         case 'audio_level':
           setAudioLevel(msg.level);
           break;
 
-        case 'transcription_result':
-          if (msg.isPartial) {
-            setPartialTranscript(msg.text, msg.meta);
+        case 'transcription_result': {
+          const s = getState();
+          if (s.fileTranscribing) {
+            if (s.fileMusicMode) {
+              setMusicTranscript(msg.text, msg.meta);
+            } else {
+              setFileTranscript(msg.text, msg.meta);
+            }
+          } else if (msg.isPartial) {
+            setVoicePartialTranscript(msg.text, msg.meta);
           } else {
-            setLastTranscript(msg.text, msg.meta);
+            setVoiceTranscript(msg.text, msg.meta);
           }
           break;
+        }
 
         case 'history_entry':
           addHistory(msg.entry);

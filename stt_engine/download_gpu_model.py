@@ -52,6 +52,8 @@ def main():
     all_patterns = [
         f"{model_name}-encoder.onnx",
         f"{model_name}-decoder.onnx",
+        f"{model_name}-encoder.int8.onnx",
+        f"{model_name}-decoder.int8.onnx",
         f"{model_name}-tokens.txt",
         f"{model_name}-encoder.weights",
         f"{model_name}-decoder.weights",
@@ -168,9 +170,21 @@ def main():
                 "The model cannot load without its external weights."
             )
 
+    # Check INT8 files (non-fatal warning if missing)
+    enc_int8 = dest_dir / f"{prefix}-encoder.int8.onnx"
+    dec_int8 = dest_dir / f"{prefix}-decoder.int8.onnx"
+    has_int8_enc = enc_int8.exists()
+    has_int8_dec = dec_int8.exists()
+    if not has_int8_enc:
+        print(f"  Note: {prefix}-encoder.int8.onnx not available (FP32 encoder will be used)")
+    if not has_int8_dec:
+        print(f"  Note: {prefix}-decoder.int8.onnx not available (FP32 decoder will be used)")
+
     total_mb = sum(f.stat().st_size for f in dest_dir.glob("*")) / 1024 / 1024
     print()
-    print(f"  FP32 model ready. Total: {total_mb:.1f} MB")
+    print(f"  Model ready. {total_mb:.1f} MB total"
+          f" | FP32 encoder + INT8 encoder: {'yes' if has_int8_enc else 'no'}"
+          f" | FP32 decoder + INT8 decoder: {'yes' if has_int8_dec else 'no'}")
 
 
 if __name__ == "__main__":
