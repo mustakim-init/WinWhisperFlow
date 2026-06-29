@@ -13,6 +13,8 @@ public sealed class WhisperBridgeService : IDisposable
     private readonly ConcurrentDictionary<string, CancellationTokenSource> _activeDownloads = new();
     private readonly ConcurrentDictionary<string, Process> _downloadProcesses = new();
     private readonly ConcurrentDictionary<string, (long downloaded, long total)> _lastDownloadProgress = new();
+    private readonly ConcurrentDictionary<string, byte> _pausedDownloads = new();
+    private readonly ConcurrentDictionary<string, byte> _pendingResume = new();
     private readonly object _loadCtsLock = new();
     private Process? _process;
     private SttRuntimeOptions _options = SttRuntimeOptions.RecommendedForThisPc;
@@ -260,13 +262,30 @@ public sealed class WhisperBridgeService : IDisposable
             try
             {
                 if (provider == "dml")
+                {
+                    // On fresh start (not resume from pause), clean old partial files
+                    if (!_pendingResume.TryRemove(compositeName, out _))
+                    {
+                        string cleanDir = Path.Combine(RuntimePaths.ModelsRoot, $"sherpa-onnx-whisper-{model}");
+                        if (Directory.Exists(cleanDir))
+                            Directory.Delete(cleanDir, recursive: true);
+                    }
                     await EnsureGpuModelDownloadedAsync(compositeName, dlCts.Token);
+                }
                 else
+                {
                     await EnsureCpuModelDownloadedAsync(compositeName, dlCts.Token);
+                }
+                _pendingResume.TryRemove(compositeName, out _);
                 DownloadProgress?.Invoke(this, new(model, 1, 1, "done", CompositeName: compositeName));
             }
             catch (Exception ex)
             {
+                // If paused, don't fire "error" — PauseDownload already fired "paused"
+                if (_pausedDownloads.TryRemove(compositeName, out _))
+                    return;
+
+                _pendingResume.TryRemove(compositeName, out _);
                 bool isCancelled = ex is OperationCanceledException;
                 if (!isCancelled) DeleteModel(compositeName);
                 string errMsg = isCancelled ? "Download cancelled" : ex.Message;
@@ -278,15 +297,21 @@ public sealed class WhisperBridgeService : IDisposable
         {
             if (_activeDownloads.TryRemove(compositeName, out var cts))
                 cts.Dispose();
-            _lastDownloadProgress.TryRemove(compositeName, out _);
+            // When paused, keep _lastDownloadProgress so resume can start from where we left off
+            if (!_pendingResume.ContainsKey(compositeName))
+                _lastDownloadProgress.TryRemove(compositeName, out _);
+            _pausedDownloads.TryRemove(compositeName, out _);
         }
     }
 
     public void CancelDownload(string compositeName)
     {
-        if (_activeDownloads.TryRemove(compositeName, out var cts))
+        var (model, _) = SttRuntimeOptions.FromCompositeName(compositeName);
+
+        bool wasActive = _activeDownloads.TryRemove(compositeName, out var cts);
+        if (wasActive)
         {
-            cts.Cancel();
+            cts!.Cancel();
             cts.Dispose();
         }
 
@@ -296,11 +321,22 @@ public sealed class WhisperBridgeService : IDisposable
             proc.Dispose();
         }
 
+        _pendingResume.TryRemove(compositeName, out _);
+        _lastDownloadProgress.TryRemove(compositeName, out _);
+
         DeleteModel(compositeName);
+
+        // If no active download (e.g. paused state), fire cancelled to clear the frontend store.
+        // When the download was active, DownloadModelAsync's catch block fires "error" instead.
+        if (!wasActive)
+            DownloadProgress?.Invoke(this, new(model, 0, 0, "cancelled", CompositeName: compositeName));
     }
 
     public void PauseDownload(string compositeName)
     {
+        _pausedDownloads[compositeName] = 0;
+        _pendingResume[compositeName] = 0;
+
         if (_activeDownloads.TryRemove(compositeName, out var cts))
         {
             cts.Cancel();
@@ -383,6 +419,7 @@ public sealed class WhisperBridgeService : IDisposable
 
     public void DeleteModel(string compositeName)
     {
+        _pendingResume.TryRemove(compositeName, out _);
         var (model, provider) = SttRuntimeOptions.FromCompositeName(compositeName);
 
         if (provider == "demucs")
@@ -598,6 +635,12 @@ public sealed class WhisperBridgeService : IDisposable
                         long downloaded = root.GetProperty("downloaded").GetInt64();
                         long total = root.GetProperty("total").GetInt64();
                         double speed = root.TryGetProperty("speed", out var speedProp) ? speedProp.GetDouble() : 0.0;
+                        // On resume from pause, Python starts from 0 — floor at last progress
+                        if (_lastDownloadProgress.TryGetValue(compositeName, out var last))
+                        {
+                            downloaded = Math.Max(downloaded, last.downloaded);
+                            total = Math.Max(total, last.total);
+                        }
                         _lastDownloadProgress[compositeName] = (downloaded, total);
                         DownloadProgress?.Invoke(this, new(model, downloaded, total, "downloading", CompositeName: compositeName, Speed: speed));
                     }
@@ -694,15 +737,36 @@ public sealed class WhisperBridgeService : IDisposable
         return true;
     }
 
+    private static long ComputeGpuCachedBytes(string model)
+    {
+        string sherpaDir = Path.Combine(RuntimePaths.ModelsRoot, $"sherpa-onnx-whisper-{model}");
+        if (!Directory.Exists(sherpaDir)) return 0;
+
+        string prefix = model;
+        string[] expectedFiles = [
+            $"{prefix}-encoder.onnx",
+            $"{prefix}-decoder.onnx",
+            $"{prefix}-encoder.int8.onnx",
+            $"{prefix}-decoder.int8.onnx",
+            $"{prefix}-tokens.txt",
+            $"{prefix}-encoder.weights",
+            $"{prefix}-decoder.weights",
+        ];
+
+        long total = 0;
+        foreach (var f in expectedFiles)
+        {
+            string path = Path.Combine(sherpaDir, f);
+            if (File.Exists(path))
+                total += new FileInfo(path).Length;
+        }
+        return total;
+    }
+
     private async Task EnsureGpuModelDownloadedAsync(string compositeName, CancellationToken ct = default)
     {
         var (model, _) = SttRuntimeOptions.FromCompositeName(compositeName);
         if (GpuModelIsComplete(model)) return;
-
-        // Clean partial downloads from interrupted sessions
-        string cleanDir = Path.Combine(RuntimePaths.ModelsRoot, $"sherpa-onnx-whisper-{model}");
-        if (Directory.Exists(cleanDir))
-            Directory.Delete(cleanDir, recursive: true);
 
         ct.ThrowIfCancellationRequested();
 
@@ -732,7 +796,7 @@ public sealed class WhisperBridgeService : IDisposable
             process.OutputDataReceived += (_, _) => { };
             process.BeginOutputReadLine();
 
-            long totalCompleted = 0;
+            long totalCompleted = ComputeGpuCachedBytes(model);
             var progressLock = new object();
             var stderrCapture = new System.Text.StringBuilder();
 
@@ -758,6 +822,12 @@ public sealed class WhisperBridgeService : IDisposable
                             cumDown = totalCompleted + downloaded;
                             cumTotal = totalCompleted + Math.Max(total, 1);
                         }
+                        // On resume from pause, Python starts from 0 — floor at last progress
+                        if (_lastDownloadProgress.TryGetValue(compositeName, out var last))
+                        {
+                            cumDown = Math.Max(cumDown, last.downloaded);
+                            cumTotal = Math.Max(cumTotal, last.total);
+                        }
                         _lastDownloadProgress[compositeName] = (cumDown, cumTotal);
                         DownloadProgress?.Invoke(this, new(model, cumDown, cumTotal, "downloading", CompositeName: compositeName, Speed: speed));
                     }
@@ -768,7 +838,9 @@ public sealed class WhisperBridgeService : IDisposable
                         {
                             totalCompleted += fileSize;
                         }
-                        DownloadProgress?.Invoke(this, new(model, totalCompleted, totalCompleted, "downloading", CompositeName: compositeName));
+                        long doneDown = totalCompleted;
+                        _lastDownloadProgress[compositeName] = (doneDown, doneDown);
+                        DownloadProgress?.Invoke(this, new(model, doneDown, doneDown, "downloading", CompositeName: compositeName));
                     }
                     else if (type == "file_cached")
                     {
@@ -784,6 +856,7 @@ public sealed class WhisperBridgeService : IDisposable
                                 {
                                     totalCompleted += fileSize;
                                 }
+                                _lastDownloadProgress[compositeName] = (totalCompleted, totalCompleted);
                                 DownloadProgress?.Invoke(this, new(model, totalCompleted, totalCompleted, "downloading", CompositeName: compositeName));
                             }
                         }

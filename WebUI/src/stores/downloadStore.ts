@@ -5,7 +5,7 @@ export interface DownloadState {
   compositeName: string | null;
   downloaded: number;
   total: number;
-  status: 'idle' | 'downloading' | 'paused' | 'done' | 'error';
+  status: 'idle' | 'downloading' | 'paused' | 'done' | 'error' | 'cancelled';
   error?: string;
   speed?: number;
 }

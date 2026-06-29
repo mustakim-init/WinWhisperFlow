@@ -73,14 +73,18 @@ export function useGlobalBridgeSync() {
           break;
 
         case 'model_download_progress':
-          useDownloadStore.getState().setProgress(
-            msg.compositeName ?? msg.model,
-            msg.downloaded,
-            msg.total,
-            msg.status,
-            msg.error,
-            msg.speed,
-          );
+          if (msg.status === 'cancelled') {
+            useDownloadStore.getState().clear(msg.compositeName ?? msg.model);
+          } else {
+            useDownloadStore.getState().setProgress(
+              msg.compositeName ?? msg.model,
+              msg.downloaded,
+              msg.total,
+              msg.status,
+              msg.error,
+              msg.speed,
+            );
+          }
           if (msg.status === 'done') {
             useToastStore.getState().addToast({
               title: `Model downloaded`,

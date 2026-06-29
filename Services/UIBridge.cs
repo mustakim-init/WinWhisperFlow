@@ -51,6 +51,7 @@ public sealed class UIBridge : IDisposable
     private readonly EventHandler<IReadOnlyList<RuntimeSetupService.SetupStep>> _onSetupSteps;
 
     private static readonly string[] AllModelNames = { "tiny", "base", "small", "medium", "large-v3", "turbo" };
+    private static readonly string[] CpuModelNames = { "tiny", "base", "small", "medium", "large-v3" };
 
     public UIBridge(
         WebView2 webView,
@@ -1033,23 +1034,23 @@ public sealed class UIBridge : IDisposable
         {
             return name switch
             {
-                "tiny" => 150L * 1024 * 1024,
-                "base" => 250L * 1024 * 1024,
-                "small" => 488L * 1024 * 1024,
-                "medium" => 1500L * 1024 * 1024,
-                "large-v3" => 3100L * 1024 * 1024,
-                "turbo" => 4300L * 1024 * 1024,
+                "tiny" => 244L * 1024 * 1024,
+                "base" => 431L * 1024 * 1024,
+                "small" => 1282L * 1024 * 1024,
+                "medium" => 3819L * 1024 * 1024,
+                "large-v3" => 7585L * 1024 * 1024,
+                "turbo" => 4076L * 1024 * 1024,
                 _ => 0
             };
         }
 
         return name switch
         {
-            "tiny" => 41L * 1024 * 1024,
-            "base" => 74L * 1024 * 1024,
-            "small" => 244L * 1024 * 1024,
-            "medium" => 769L * 1024 * 1024,
-            "large-v3" => 1540L * 1024 * 1024,
+            "tiny" => 75L * 1024 * 1024,
+            "base" => 141L * 1024 * 1024,
+            "small" => 464L * 1024 * 1024,
+            "medium" => 1460L * 1024 * 1024,
+            "large-v3" => 2948L * 1024 * 1024,
             "turbo" => 809L * 1024 * 1024,
             _ => 0
         };
@@ -1086,7 +1087,7 @@ public sealed class UIBridge : IDisposable
         var models = new List<object>();
 
         // Base models — always shown as CPU
-        foreach (var name in AllModelNames)
+        foreach (var name in CpuModelNames)
         {
             string composite = $"{name}-cpu";
             bool downloaded = _whisper.IsModelDownloaded("cpu", name);

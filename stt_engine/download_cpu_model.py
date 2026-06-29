@@ -24,6 +24,9 @@ def main():
         print("Usage: download_cpu_model.py <model_name> <models_dir>")
         sys.exit(1)
 
+    # Disable Xet Storage so hf_hub uses http_get with per-chunk progress updates
+    os.environ["HF_HUB_DISABLE_XET"] = "1"
+
     model_name = sys.argv[1]
     cache_dir = sys.argv[2]
     repo_id = f"Systran/faster-whisper-{model_name}"
@@ -37,6 +40,7 @@ def main():
                     kwargs["file"] = open(os.devnull, "w")
                     super().__init__(*args, **kwargs)
                     self._last_time = 0.0
+                    self._last_reported = -1
 
                 def update(self, n=1):
                     super().update(n)
@@ -46,11 +50,16 @@ def main():
                     if now - self._last_time < 0.5 and self.n != fixed_total:
                         return
                     self._last_time = now
+                    downloaded = min(self.n, fixed_total)
                     rate = self.format_dict.get("rate")
+                    # Avoid flooding with duplicate values
+                    if self.n == self._last_reported:
+                        return
+                    self._last_reported = self.n
                     sys.stderr.write(
                         json.dumps({
                             "type": "dl_progress",
-                            "downloaded": self.n,
+                            "downloaded": downloaded,
                             "total": fixed_total,
                             "speed": rate if rate is not None else 0.0,
                         })

@@ -29,7 +29,7 @@ export interface ModelDownloadProgress {
   model: string;
   downloaded: number;
   total: number;
-  status: 'downloading' | 'done' | 'error';
+  status: 'downloading' | 'done' | 'error' | 'cancelled' | 'paused';
   error?: string;
   compositeName?: string;
   speed?: number;
