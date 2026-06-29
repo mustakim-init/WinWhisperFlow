@@ -1,5 +1,7 @@
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Text;
 
 namespace WinWhisperFlow.Services;
 
@@ -108,11 +110,30 @@ public sealed class RuntimeSetupService
         steps[2] = steps[2] with { Status = "running" };
         Emit();
 
-        string requirementsPath = ResolveRequirementsPath();
-        int pipResult = await RunSilentAsync(runtimePython, $"-m pip install -r \"{requirementsPath}\"", null, 600000, ct);
+        // Embedded Python may lack SSL certs — upgrade pip and try trusted-host fallback
+        string reqPath = ResolveRequirementsPath();
+        string pipError = "";
+        int pipResult = -1;
+
+        // Try 1: normal install
+        (pipResult, pipError) = await RunPipInstallAsync(runtimePython, reqPath, ct);
+        // Try 2: if SSL-related, retry with --trusted-host
+        if (pipResult != 0 && pipError.Contains("SSL", StringComparison.OrdinalIgnoreCase))
+        {
+            steps[2] = steps[2] with { Label = "Retrying with --trusted-host..." };
+            Emit();
+            (pipResult, pipError) = await RunPipInstallAsync(runtimePython, reqPath, ct, trustedHost: true);
+        }
+
         if (pipResult != 0)
         {
-            steps[2] = steps[2] with { Status = "error", Error = "pip install failed. Check your internet connection." };
+            string msg = pipError.Length > 200 ? pipError[..200] + "..." : pipError;
+            try { File.AppendAllText(RuntimePaths.LogPath, $"[{DateTime.Now:O}] pip install failed:\n{pipError}\n"); } catch { }
+            steps[2] = steps[2] with
+            {
+                Status = "error",
+                Error = $"pip install failed: {msg}"
+            };
             Emit();
             return;
         }
@@ -193,7 +214,20 @@ public sealed class RuntimeSetupService
         Emit();
     }
 
-    private static async Task<int> RunSilentAsync(string fileName, string arguments, string? workingDir, int timeoutMs, CancellationToken ct = default)
+    private static async Task<(int exitCode, string error)> RunPipInstallAsync(string python, string reqPath, CancellationToken ct, bool trustedHost = false)
+    {
+        // Step A: upgrade pip first (can fail on SSL, but we try)
+        string upgradeArgs = "-m pip install --upgrade pip";
+        if (trustedHost) upgradeArgs += " --trusted-host pypi.org --trusted-host files.pythonhosted.org";
+        await RunSilentCaptureAsync(python, upgradeArgs, null, 120_000, ct);
+
+        // Step B: install requirements
+        string installArgs = $"-m pip install -r \"{reqPath}\"";
+        if (trustedHost) installArgs += " --trusted-host pypi.org --trusted-host files.pythonhosted.org";
+        return await RunSilentCaptureAsync(python, installArgs, null, 600_000, ct);
+    }
+
+    private static async Task<(int exitCode, string stderr)> RunSilentCaptureAsync(string fileName, string arguments, string? workingDir, int timeoutMs, CancellationToken ct = default)
     {
         var psi = new ProcessStartInfo
         {
@@ -204,29 +238,38 @@ public sealed class RuntimeSetupService
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true,
+            StandardErrorEncoding = Encoding.UTF8,
         };
 
         using var process = Process.Start(psi);
-        if (process is null) return -1;
+        if (process is null) return (-1, "Process failed to start");
 
-        // Drain stdout/stderr asynchronously to prevent deadlock from full pipe buffers
-        process.OutputDataReceived += (_, _) => { };
-        process.ErrorDataReceived += (_, _) => { };
-        process.BeginOutputReadLine();
+        var stderrBuilder = new StringBuilder();
+        process.ErrorDataReceived += (_, e) => { if (e.Data is not null) stderrBuilder.AppendLine(e.Data); };
         process.BeginErrorReadLine();
+
+        // Drain stdout to prevent deadlock
+        var stdoutTask = process.StandardOutput.ReadToEndAsync();
 
         try
         {
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             cts.CancelAfter(timeoutMs);
             await process.WaitForExitAsync(cts.Token);
-            return process.ExitCode;
+            await stdoutTask;
+            return (process.ExitCode, stderrBuilder.ToString().Trim());
         }
         catch (OperationCanceledException)
         {
             try { process.Kill(entireProcessTree: true); } catch { }
-            return -1;
+            return (-1, "Timed out");
         }
+    }
+
+    private static async Task<int> RunSilentAsync(string fileName, string arguments, string? workingDir, int timeoutMs, CancellationToken ct = default)
+    {
+        var (code, _) = await RunSilentCaptureAsync(fileName, arguments, workingDir, timeoutMs, ct);
+        return code;
     }
 
     private static string ResolveRequirementsPath()
