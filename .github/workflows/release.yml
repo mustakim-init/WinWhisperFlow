@@ -62,9 +62,12 @@ jobs:
         run: dotnet tool install -g vpk
 
       - name: Pack Velopack release
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
+          $ver = "$env:TAG" -replace '^v', ''
           vpk pack -u WinWhisperFlow `
-            -v ${{ github.ref_name }} `
+            -v $ver `
             -p artifacts\publish\WinWhisperFlow `
             -o artifacts\vpk `
             -i Icon.ico `
