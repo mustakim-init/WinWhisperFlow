@@ -33,6 +33,7 @@ jobs:
         run: |
           python -m venv .venv
           .\.venv\Scripts\python -m pip install --upgrade pip
+          .\.venv\Scripts\pip install "numpy<2.0.0"
           .\.venv\Scripts\pip install -r stt_engine\requirements.txt
           .\.venv\Scripts\pip install demucs
           .\.venv\Scripts\pip install pyinstaller

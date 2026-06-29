@@ -6,11 +6,11 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[],
-    hiddenimports=['faster_whisper', 'numpy', 'json'],
+    hiddenimports=['faster_whisper', 'numpy', 'numpy._core', 'numpy._core.multiarray', 'numpy._core.overrides', 'json'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['numpy.core'],
     noarchive=False,
     optimize=2,
 )
