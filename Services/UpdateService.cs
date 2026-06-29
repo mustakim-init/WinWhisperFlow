@@ -7,6 +7,7 @@ namespace WinWhisperFlow.Services;
 public class UpdateService
 {
     private readonly string _repoUrl = "https://github.com/mustakim-init/WinWhisperFlow";
+    private readonly SemaphoreSlim _updateGate = new(1, 1);
     private UpdateManager? _manager;
     private bool _updateAvailable;
     private string? _newVersion;
@@ -27,39 +28,48 @@ public class UpdateService
 
     public async Task<(bool available, string? version)> CheckForUpdatesAsync()
     {
+        await _updateGate.WaitAsync();
         try
         {
             var mgr = GetManager();
-            _latestUpdate = await mgr.CheckForUpdatesAsync();
-            _updateAvailable = _latestUpdate is not null;
-            _newVersion = _latestUpdate?.TargetFullRelease?.Version?.ToString();
+            var info = await mgr.CheckForUpdatesAsync();
+            _latestUpdate = info;
+            _updateAvailable = info is not null;
+            _newVersion = info?.TargetFullRelease?.Version?.ToString();
             return (_updateAvailable, _newVersion);
         }
-        catch
+        catch (Exception ex)
         {
+            Debug.WriteLine($"Update check failed: {ex.Message}");
             _updateAvailable = false;
             _newVersion = null;
             _latestUpdate = null;
             return (false, null);
         }
+        finally
+        {
+            _updateGate.Release();
+        }
     }
 
     public async Task DownloadUpdateAsync(Action<int>? progress = null)
     {
+        await _updateGate.WaitAsync();
         try
         {
             var mgr = GetManager();
-            if (_latestUpdate is null)
-            {
-                _latestUpdate = await mgr.CheckForUpdatesAsync();
-            }
-            if (_latestUpdate is null) return;
-            await mgr.DownloadUpdatesAsync(_latestUpdate, progress);
+            var info = _latestUpdate ?? await mgr.CheckForUpdatesAsync();
+            if (info is null) return;
+            await mgr.DownloadUpdatesAsync(info, progress);
         }
         catch (Exception ex)
         {
             Debug.WriteLine($"Update download failed: {ex.Message}");
             throw;
+        }
+        finally
+        {
+            _updateGate.Release();
         }
     }
 

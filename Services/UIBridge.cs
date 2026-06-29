@@ -495,7 +495,15 @@ public sealed class UIBridge : IDisposable
                     break;
 
                 case "apply_update":
-                    _updateService.ApplyAndRestart();
+                    try
+                    {
+                        _updateService.ApplyAndRestart();
+                    }
+                    catch (Exception ex)
+                    {
+                        Post(new { type = "log", message = $"Update apply failed: {ex.Message}" });
+                        Post(new { type = "notification", title = "Update failed", message = ex.Message, variant = "error" });
+                    }
                     break;
 
                 case "toggle_listening":
@@ -670,6 +678,8 @@ public sealed class UIBridge : IDisposable
 
                 case "set_language":
                     _selectedLanguage = GetStringProp(root, "language", "en");
+                    SettingsStore.Language = _selectedLanguage;
+                    SettingsStore.Save();
                     break;
 
                 case "get_model_note":
@@ -832,7 +842,7 @@ public sealed class UIBridge : IDisposable
             "LeftArrow" => 0x25,
             "RightArrow" => 0x27,
             "CapsLock" => 0x14,
-            _ when keyName.StartsWith("F") && int.TryParse(keyName[1..], out int fn) && fn >= 1 && fn <= 24 => fn + 0x69,
+            _ when keyName.StartsWith("F") && int.TryParse(keyName[1..], out int fn) && fn >= 1 && fn <= 24 => fn + 0x6F,
             _ when keyName.StartsWith("Digit") && int.TryParse(keyName[5..], out int dn) && dn >= 0 && dn <= 9 => 0x30 + dn,
             _ when keyName.StartsWith("Key") && keyName.Length == 4 => char.ToUpperInvariant(keyName[3]),
             _ => 0,
@@ -920,8 +930,8 @@ public sealed class UIBridge : IDisposable
             }
 
             var loadOpts = bestModel == recommended.Model
-                ? recommended
-                : BuildRuntimeOptions($"{bestModel}-{provider}");
+                ? recommended with { Language = _selectedLanguage }
+                : BuildRuntimeOptions($"{bestModel}-{provider}", _selectedLanguage);
 
             Post(new { type = "log", message = $"Loading model {bestModel} on {provider}\u2026" });
             Post(new { type = "status_update", text = "Loading model\u2026", variant = "warning" });
@@ -1251,7 +1261,7 @@ public sealed class UIBridge : IDisposable
 
         try
         {
-            var loadOpts = BuildRuntimeOptions(compositeName);
+            var loadOpts = BuildRuntimeOptions(compositeName, _selectedLanguage);
             await _whisper.RestartAsync(loadOpts);
             string actualDevice = _whisper.GetReportedDevice();
             if (actualDevice != loadOpts.Device)
@@ -1316,18 +1326,18 @@ public sealed class UIBridge : IDisposable
         Post(new { type = "history_entry", entry = new { action = TranscriptionHistory.ActionLabel(action), text, timestamp = entry.Timestamp.ToString("g"), ts = entry.Timestamp.ToString("O"), source } });
     }
 
-    private static SttRuntimeOptions BuildRuntimeOptions(string compositeName)
+    private static SttRuntimeOptions BuildRuntimeOptions(string compositeName, string language = "en")
     {
         var (model, device) = SttRuntimeOptions.FromCompositeName(compositeName);
 
         if (device == "cuda")
-            return new SttRuntimeOptions(model, "cuda", "float16", 4, 1, 1) { Provider = "cuda" };
+            return new SttRuntimeOptions(model, "cuda", "float16", 4, 1, 1) { Provider = "cuda", Language = language };
 
         if (device == "dml")
-            return new SttRuntimeOptions(model, "dml", "float16", 4, 1, 1) { Provider = "dml" };
+            return new SttRuntimeOptions(model, "dml", "float16", 4, 1, 1) { Provider = "dml", Language = language };
 
         int beam = GetRecommendedBeamSize(model);
-        return new SttRuntimeOptions(model, "cpu", "int8", 6, 1, beam) { Provider = "cpu" };
+        return new SttRuntimeOptions(model, "cpu", "int8", 6, 1, beam) { Provider = "cpu", Language = language };
     }
 
     private static int GetRecommendedBeamSize(string model) => model.ToLowerInvariant() switch
@@ -1354,17 +1364,11 @@ public sealed class UIBridge : IDisposable
                     : "Select a directory";
                 dialog.UseDescriptionForTitle = true;
 
-                if (System.Windows.Application.Current?.Dispatcher is { } dispatcher)
-                {
-                    dispatcher.Invoke(() =>
-                    {
-                        var result = dialog.ShowDialog();
-                        if (result == System.Windows.Forms.DialogResult.OK)
-                            Post(new { type = "directory_picked", path = dialog.SelectedPath });
-                        else
-                            Post(new { type = "directory_picked", path = (string?)null });
-                    });
-                }
+                var result = dialog.ShowDialog();
+                if (result == System.Windows.Forms.DialogResult.OK)
+                    Post(new { type = "directory_picked", path = dialog.SelectedPath });
+                else
+                    Post(new { type = "directory_picked", path = (string?)null });
             }
             catch (Exception ex)
             {

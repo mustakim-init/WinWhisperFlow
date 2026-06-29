@@ -13,7 +13,8 @@ public sealed record SttRuntimeOptions(
     public int VadMinSilenceDurationMs { get; init; } = 300;
     public double NoSpeechThreshold { get; init; } = 0.45;
     public double LogProbThreshold { get; init; } = -0.8;
- 
+    public string Language { get; init; } = "en";
+
     private static CachedGpuResult? _gpuCache;
 
     public static SttRuntimeOptions RecommendedForThisPc

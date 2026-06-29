@@ -129,11 +129,19 @@ public sealed class RuntimeSetupService
         var (gpuProvider, gpuCard) = gpuInfo.Detect();
         if (steps[2].Status == "done" && gpuProvider is "cuda" or "dml")
         {
-            string[] gpuPackages = [
-                "onnxruntime-directml>=1.16.0",
-                "numpy>=1.21.0,<2.5.0",
-                "librosa>=0.10.0"
-            ];
+            string[] gpuPackages = gpuProvider switch
+            {
+                "dml" => [
+                    "onnxruntime-directml>=1.16.0",
+                    "numpy>=1.21.0,<2.5.0",
+                    "librosa>=0.10.0"
+                ],
+                "cuda" => [
+                    "numpy>=1.21.0,<2.5.0",
+                    "librosa>=0.10.0"
+                ],
+                _ => ["numpy>=1.21.0,<2.5.0"]
+            };
 
             var failedPackages = new List<string>();
             foreach (var pkg in gpuPackages)
@@ -239,18 +247,6 @@ public sealed class RuntimeSetupService
 
         return candidates.FirstOrDefault(File.Exists)
                ?? throw new FileNotFoundException("Could not find stt_engine\\requirements.txt.");
-    }
-
-    private static string ResolveGpuRequirementsPath()
-    {
-        string[] candidates =
-        {
-            Path.Combine(AppContext.BaseDirectory, "stt_engine", "requirements_gpu.txt"),
-            Path.Combine(Environment.CurrentDirectory, "stt_engine", "requirements_gpu.txt")
-        };
-
-        return candidates.FirstOrDefault(File.Exists)
-               ?? throw new FileNotFoundException("Could not find stt_engine\\requirements_gpu.txt.");
     }
 
     private static string? FindProjectVenvPython()

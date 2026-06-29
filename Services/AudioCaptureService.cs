@@ -240,5 +240,6 @@ public sealed class AudioCaptureService : IDisposable
     {
         string? file = Stop();
         if (file is not null) { try { File.Delete(file); } catch { } }
+        GC.SuppressFinalize(this);
     }
 }

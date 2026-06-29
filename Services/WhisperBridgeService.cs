@@ -47,7 +47,7 @@ public sealed class WhisperBridgeService : IDisposable
             if (_options.Device == "cuda")
             {
                 string composite = $"{_options.Model}-{_options.Device}";
-                await EnsureCpuModelDownloadedAsync(composite, ct);
+                await EnsureGpuModelDownloadedAsync(composite, ct);
                 DownloadProgress?.Invoke(this, new(_options.Model, 1, 1, "done", CompositeName: composite));
             }
             else if (_options.Device == "dml")
@@ -81,7 +81,7 @@ public sealed class WhisperBridgeService : IDisposable
             startInfo.Environment["WINWHISPER_CPU_THREADS"] = _options.CpuThreads.ToString();
             startInfo.Environment["WINWHISPER_NUM_WORKERS"] = _options.NumWorkers.ToString();
             startInfo.Environment["WINWHISPER_BEAM_SIZE"] = _options.BeamSize.ToString();
-            startInfo.Environment["WINWHISPER_LANGUAGE"] = "en";
+            startInfo.Environment["WINWHISPER_LANGUAGE"] = _options.Language;
             startInfo.Environment["WINWHISPER_MODELS_DIR"] = RuntimePaths.ModelsRoot;
             startInfo.Environment["WINWHISPER_VAD_FILTER"] = _options.VadFilter ? "1" : "0";
             startInfo.Environment["WINWHISPER_VAD_MIN_SILENCE"] = _options.VadMinSilenceDurationMs.ToString();
@@ -1007,26 +1007,11 @@ public sealed class WhisperBridgeService : IDisposable
     {
         try
         {
-            string checkScript = ResolveDemucsCheckScriptPath();
-            string python = ResolvePython();
-
-            var psi = new ProcessStartInfo
-            {
-                FileName = python,
-                Arguments = $"-u \"{checkScript}\"",
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                CreateNoWindow = true,
-            };
-
-            using var process = Process.Start(psi);
-            if (process is null) return false;
-
-            string output = process.StandardOutput.ReadToEnd();
-            process.WaitForExit(5000);
-
-            using var doc = JsonDocument.Parse(output);
-            return doc.RootElement.GetProperty("downloaded").GetBoolean();
+            string cacheDir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                ".cache", "torch", "hub", "checkpoints");
+            string modelPath = Path.Combine(cacheDir, "955717e8-8726e21a.th");
+            return File.Exists(modelPath) && new FileInfo(modelPath).Length >= 70_000_000;
         }
         catch
         {
@@ -1044,18 +1029,6 @@ public sealed class WhisperBridgeService : IDisposable
 
         return candidates.FirstOrDefault(File.Exists)
                ?? throw new FileNotFoundException("Could not find stt_engine\\download_demucs_model.py.");
-    }
-
-    private static string ResolveDemucsCheckScriptPath()
-    {
-        string[] candidates =
-        {
-            Path.Combine(AppContext.BaseDirectory, "stt_engine", "check_demucs_model.py"),
-            Path.Combine(Environment.CurrentDirectory, "stt_engine", "check_demucs_model.py")
-        };
-
-        return candidates.FirstOrDefault(File.Exists)
-               ?? throw new FileNotFoundException("Could not find stt_engine\\check_demucs_model.py.");
     }
 
     private static string ResolvePython()

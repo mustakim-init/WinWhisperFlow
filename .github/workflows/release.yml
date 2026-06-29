@@ -78,7 +78,8 @@ jobs:
 
       - name: Install Inno Setup
         run: |
-          winget install JRSoftware.InnoSetup --accept-source-agreements --silent
+          curl -sL "https://jrsoftware.org/download.php/is.exe" -o "$env:TEMP\innosetup.exe"
+          Start-Process -Wait -FilePath "$env:TEMP\innosetup.exe" -ArgumentList "/VERYSILENT /SUPPRESSMSGBOXES /NORESTART /SP-"
           # Wait for installation and find ISCC.exe
           $retries = 10
           while ($retries -gt 0) {

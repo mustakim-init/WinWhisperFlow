@@ -480,19 +480,21 @@ public sealed class PhoneMicService : IDisposable
     private static async Task<string?> ReadHttpRequestAsync(NetworkStream stream, CancellationToken ct)
     {
         var sb = new StringBuilder();
-        byte[] buf = new byte[1];
+        byte[] buf = new byte[4096];
 
         while (true)
         {
-            int read = await stream.ReadAsync(buf, 0, 1, ct);
+            int read = await stream.ReadAsync(buf, 0, buf.Length, ct);
             if (read == 0) return null;
-            sb.Append((char)buf[0]);
-            if (sb.Length >= 4 &&
-                sb[^4] == '\r' && sb[^3] == '\n' &&
-                sb[^2] == '\r' && sb[^1] == '\n')
-                break;
+            for (int i = 0; i < read; i++)
+            {
+                sb.Append((char)buf[i]);
+                if (sb.Length >= 4 &&
+                    sb[^4] == '\r' && sb[^3] == '\n' &&
+                    sb[^2] == '\r' && sb[^1] == '\n')
+                    return sb.ToString();
+            }
         }
-        return sb.ToString();
     }
 
     private async Task FireTranscriptionEventAsync(byte[] pcmChunk, CancellationToken ct = default)

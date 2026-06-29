@@ -49,7 +49,7 @@
     <None Include="Sfx\**\*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
-  <Target Name="BuildWebUI" BeforeTargets="Build" Condition="Exists('$(ProjectDir)WebUI\package.json')">
+  <Target Name="BuildWebUI" BeforeTargets="Build" Condition="Exists('$(ProjectDir)WebUI\package.json') And '$(SkipWebUI)' != 'true'">
     <Message Importance="high" Text="Building WebUI..." />
     <Exec Command="npm run build" WorkingDirectory="$(ProjectDir)WebUI" />
   </Target>
