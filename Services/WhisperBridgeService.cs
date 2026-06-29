@@ -425,18 +425,13 @@ public sealed class WhisperBridgeService : IDisposable
 
         if (provider == "demucs")
         {
-            // Delete Demucs model from torch hub cache
+            // Delete Demucs model from ModelsRoot
             try
             {
-                string cacheDir = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                    ".cache", "torch", "hub", "checkpoints");
-
-                // Try multiple known checkpoint hashes for different Demucs versions
                 string[] knownCheckpoints = { "955717e8-8726e21a.th", "4c322b83-d8dc4b37.th" };
                 foreach (string name in knownCheckpoints)
                 {
-                    string modelFile = Path.Combine(cacheDir, name);
+                    string modelFile = Path.Combine(RuntimePaths.ModelsRoot, name);
                     if (File.Exists(modelFile))
                         File.Delete(modelFile);
                     string partFile = modelFile + ".part";
@@ -921,11 +916,12 @@ public sealed class WhisperBridgeService : IDisposable
 
         string downloadScript = ResolveDemucsDownloadScriptPath();
         string python = ResolvePython();
+        string modelsDir = RuntimePaths.ModelsRoot;
 
         var psi = new ProcessStartInfo
         {
             FileName = python,
-            Arguments = $"-u \"{downloadScript}\"",
+            Arguments = $"-u \"{downloadScript}\" \"{modelsDir}\"",
             UseShellExecute = false,
             RedirectStandardOutput = true,
             RedirectStandardError = true,
@@ -1007,10 +1003,7 @@ public sealed class WhisperBridgeService : IDisposable
     {
         try
         {
-            string cacheDir = Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-                ".cache", "torch", "hub", "checkpoints");
-            string modelPath = Path.Combine(cacheDir, "955717e8-8726e21a.th");
+            string modelPath = Path.Combine(RuntimePaths.ModelsRoot, "955717e8-8726e21a.th");
             return File.Exists(modelPath) && new FileInfo(modelPath).Length >= 70_000_000;
         }
         catch

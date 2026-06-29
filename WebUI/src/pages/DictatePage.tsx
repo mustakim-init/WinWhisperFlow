@@ -236,17 +236,15 @@ function VoiceTranscriptView() {
   const [copied, setCopied] = useState(false);
   const [editText, setEditText] = useState(() => store.voiceTranscript);
   const editRef = useRef(editText);
-  const wasListening = useRef(store.isListening);
   editRef.current = editText;
 
   const metaText = store.isListening ? store.voicePartialMeta : store.voiceMeta;
 
-  // Sync editText from store when a new transcription arrives after recording stops
+  // Sync editText from store whenever a new transcription arrives (isListening just ended)
   useEffect(() => {
-    if (wasListening.current && !store.isListening) {
+    if (!store.isListening) {
       setEditText(store.voiceTranscript);
     }
-    wasListening.current = store.isListening;
   }, [store.isListening, store.voiceTranscript]);
 
   // Persist edits to store on unmount (tab switch)

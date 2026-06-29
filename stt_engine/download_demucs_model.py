@@ -10,7 +10,9 @@ FILENAME = "955717e8-8726e21a.th"
 
 
 def get_cache_dir() -> str:
-    """Return the torch hub cache directory, respecting TORCH_HOME env var."""
+    """Return the models directory from command-line arg, or fall back to torch hub cache."""
+    if len(sys.argv) > 1:
+        return sys.argv[1]
     torch_home = os.environ.get("TORCH_HOME")
     if torch_home:
         return os.path.join(torch_home, "hub", "checkpoints")

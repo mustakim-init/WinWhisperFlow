@@ -24,34 +24,42 @@ public partial class OverlayWindow : Window
 
     private async void OnLoaded(object sender, RoutedEventArgs e)
     {
-        string baseDir = AppContext.BaseDirectory;
-        string overlayDir = Path.GetFullPath(Path.Combine(baseDir, "WebUI"));
-        if (!Directory.Exists(overlayDir))
-            overlayDir = Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "WebUI"));
-
-        // Must be set BEFORE EnsureCoreWebView2Async for transparency to work
-        OverlayWebView.DefaultBackgroundColor = System.Drawing.Color.FromArgb(0, 0, 0, 0);
-
-        await OverlayWebView.EnsureCoreWebView2Async();
-
-        OverlayWebView.CoreWebView2.Settings.IsScriptEnabled = true;
-        OverlayWebView.CoreWebView2.Settings.IsWebMessageEnabled = true;
-        OverlayWebView.CoreWebView2.Settings.AreDefaultScriptDialogsEnabled = false;
-        OverlayWebView.CoreWebView2.Settings.IsStatusBarEnabled = false;
-
-        // Navigate to overlay.html via file path
-        string overlayPath = Path.Combine(overlayDir, "overlay.html");
-        if (File.Exists(overlayPath))
+        try
         {
-            OverlayWebView.CoreWebView2.NavigationCompleted += (_, _) =>
-            {
-                _webViewReady = true;
-                FlushPendingMessage();
-            };
-            OverlayWebView.CoreWebView2.Navigate(overlayPath);
-        }
+            string baseDir = AppContext.BaseDirectory;
+            string overlayDir = Path.GetFullPath(Path.Combine(baseDir, "WebUI"));
+            if (!Directory.Exists(overlayDir))
+                overlayDir = Path.GetFullPath(Path.Combine(baseDir, "..", "..", "..", "WebUI"));
 
-        PositionAboveTaskbar();
+            // Must be set BEFORE EnsureCoreWebView2Async for transparency to work
+            OverlayWebView.DefaultBackgroundColor = System.Drawing.Color.FromArgb(0, 0, 0, 0);
+
+            await OverlayWebView.EnsureCoreWebView2Async();
+
+            OverlayWebView.CoreWebView2.Settings.IsScriptEnabled = true;
+            OverlayWebView.CoreWebView2.Settings.IsWebMessageEnabled = true;
+            OverlayWebView.CoreWebView2.Settings.AreDefaultScriptDialogsEnabled = false;
+            OverlayWebView.CoreWebView2.Settings.IsStatusBarEnabled = false;
+
+            // Navigate to overlay.html via file path
+            string overlayPath = Path.Combine(overlayDir, "overlay.html");
+            if (File.Exists(overlayPath))
+            {
+                OverlayWebView.CoreWebView2.NavigationCompleted += (_, _) =>
+                {
+                    _webViewReady = true;
+                    FlushPendingMessage();
+                };
+                OverlayWebView.CoreWebView2.Navigate(overlayPath);
+            }
+
+            PositionAboveTaskbar();
+        }
+        catch (Exception ex)
+        {
+            System.Diagnostics.Debug.WriteLine($"Overlay WebView2 init failed: {ex.Message}");
+            // Overlay is non-critical — transcription still works without it
+        }
     }
 
     public void ShowListening()

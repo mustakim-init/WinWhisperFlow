@@ -18,10 +18,16 @@ if (-not (Test-Path $cliffExe)) {
   Remove-Item $zip -Force
 }
 
+# Use --unreleased so git-cliff shows commits not yet tagged (or ALL if no tags exist)
+& $cliffExe --unreleased --output "$OutputFile"
+
 if ($Tag) {
-  & $cliffExe --tag "$Tag" --output "$OutputFile"
-} else {
-  & $cliffExe --unreleased --output "$OutputFile"
+  # Stamp the version header since --unreleased outputs "## [unreleased]"
+  $content = Get-Content $OutputFile -Raw
+  $today = Get-Date -Format "yyyy-MM-dd"
+  $ver = $Tag -replace "^v", ""
+  $content = $content -replace '^## \[unreleased\]', "## [$ver] - $today"
+  Set-Content $OutputFile $content
 }
 
 Write-Host "Changelog written to $OutputFile" -ForegroundColor Green
