@@ -46,6 +46,13 @@ if ($proc.ExitCode -ne 0) {
     exit 1
 }
 
+# Pre-install setuptools and wheel so user doesn't need to download them
+Write-Host "Pre-installing setuptools and wheel..."
+$proc = Start-Process -FilePath "$TempDir\python.exe" -ArgumentList "-m", "pip", "install", "setuptools", "wheel" -Wait -NoNewWindow -PassThru
+if ($proc.ExitCode -ne 0) {
+    Write-Host "Warning: failed to pre-install setuptools/wheel"
+}
+
 # Copy to project
 if (Test-Path $PythonDir) {
     Remove-Item $PythonDir -Recurse -Force

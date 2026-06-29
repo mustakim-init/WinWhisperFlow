@@ -216,8 +216,8 @@ public sealed class RuntimeSetupService
 
     private static async Task<(int exitCode, string error)> RunPipInstallAsync(string python, string reqPath, CancellationToken ct, bool trustedHost = false)
     {
-        // Step A: upgrade pip first (can fail on SSL, but we try)
-        string upgradeArgs = "-m pip install --upgrade pip";
+        // Step A: upgrade pip + install setuptools/wheel for sdist builds
+        string upgradeArgs = "-m pip install --upgrade pip setuptools wheel";
         if (trustedHost) upgradeArgs += " --trusted-host pypi.org --trusted-host files.pythonhosted.org";
         await RunSilentCaptureAsync(python, upgradeArgs, null, 120_000, ct);
 
