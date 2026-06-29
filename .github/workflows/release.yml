@@ -76,6 +76,26 @@ jobs:
             -i Icon.ico `
             -e WinWhisperFlow.exe
 
+      - name: Install Inno Setup
+        run: |
+          winget install JRSoftware.InnoSetup --accept-source-agreements --silent
+          # Wait for installation and find ISCC.exe
+          $retries = 10
+          while ($retries -gt 0) {
+            $iscc = Get-Command "iscc" -ErrorAction SilentlyContinue
+            if ($iscc) { break }
+            $iscc = Get-ChildItem "$env:ProgramFiles (x86)\Inno Setup 6" -Filter "ISCC.exe" -ErrorAction SilentlyContinue
+            if ($iscc) { break }
+            $iscc = Get-ChildItem "${env:ProgramFiles}\Inno Setup 6" -Filter "ISCC.exe" -ErrorAction SilentlyContinue
+            if ($iscc) { break }
+            Start-Sleep -Seconds 3
+            $retries--
+          }
+
+      - name: Build Inno Setup installer
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\WinWhisperFlow.iss
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         env:
@@ -84,4 +104,5 @@ jobs:
           files: |
             artifacts\WinWhisperFlow-portable.zip
             artifacts\vpk\*
+            artifacts\installer\WinWhisperFlowSetup.exe
           generate_release_notes: true
