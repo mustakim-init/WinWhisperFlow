@@ -49,12 +49,14 @@ jobs:
 
       - name: Publish .NET app
         run: |
+          $ver = "${{ github.ref_name }}" -replace "^v", ""
           dotnet publish WinWhisperFlow.csproj `
             -c Release `
             -r win-x64 `
             --self-contained true `
             -p:PublishSingleFile=false `
             -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:VersionPrefix=$ver `
             -o artifacts\publish\WinWhisperFlow
 
       - name: Create portable zip
@@ -80,6 +82,9 @@ jobs:
 
       - name: Build Inno Setup installer
         run: |
+          $ver = "${{ github.ref_name }}" -replace "^v", ""
+          # Patch version in .iss so installer displays correct version
+          (Get-Content installer\WinWhisperFlow.iss) -replace '(?<=#define MyAppVersion ").*?(?=")', "$ver" | Set-Content installer\WinWhisperFlow.iss
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\WinWhisperFlow.iss
 
       - name: Generate changelog
