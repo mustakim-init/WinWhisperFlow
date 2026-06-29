@@ -1,49 +1,79 @@
 using System.Diagnostics;
-using Velopack;
-using Velopack.Sources;
+using System.IO;
+using System.IO.Compression;
+using System.Net.Http;
+using System.Reflection;
+using System.Text.Json;
 
 namespace WinWhisperFlow.Services;
 
 public class UpdateService
 {
-    private readonly string _repoUrl = "https://github.com/mustakim-init/WinWhisperFlow";
+    private readonly string _repoUrl = "https://api.github.com/repos/mustakim-init/WinWhisperFlow";
+    private readonly string _userAgent = "WinWhisperFlow/1.0";
     private readonly SemaphoreSlim _updateGate = new(1, 1);
-    private UpdateManager? _manager;
     private bool _updateAvailable;
     private string? _newVersion;
-    private UpdateInfo? _latestUpdate;
+    private string? _downloadUrl;
+    private string? _appDir;
 
     public bool IsUpdateAvailable => _updateAvailable;
     public string? NewVersion => _newVersion;
 
-    public UpdateManager GetManager()
-    {
-        if (_manager is null)
-        {
-            var source = new GithubSource(_repoUrl, null, false);
-            _manager = new UpdateManager(source);
-        }
-        return _manager;
-    }
+    private static Version? CurrentVersion =>
+        Assembly.GetEntryAssembly()?.GetName()?.Version;
 
     public async Task<(bool available, string? version)> CheckForUpdatesAsync()
     {
         await _updateGate.WaitAsync();
         try
         {
-            var mgr = GetManager();
-            var info = await mgr.CheckForUpdatesAsync();
-            _latestUpdate = info;
-            _updateAvailable = info is not null;
-            _newVersion = info?.TargetFullRelease?.Version?.ToString();
-            return (_updateAvailable, _newVersion);
+            using var client = new HttpClient();
+            client.DefaultRequestHeaders.UserAgent.ParseAdd(_userAgent);
+            client.Timeout = TimeSpan.FromSeconds(15);
+
+            var response = await client.GetAsync($"{_repoUrl}/releases/latest");
+            if (!response.IsSuccessStatusCode) return (false, null);
+
+            var json = await response.Content.ReadAsStringAsync();
+            using var doc = JsonDocument.Parse(json);
+            var root = doc.RootElement;
+
+            string? tagName = root.TryGetProperty("tag_name", out var tag) ? tag.GetString() : null;
+            if (tagName is null) return (false, null);
+
+            string versionStr = tagName.TrimStart('v');
+            if (!Version.TryParse(versionStr, out var remoteVersion)) return (false, null);
+
+            var local = CurrentVersion;
+            if (local is not null && remoteVersion <= local) return (false, null);
+
+            // Find the portable zip asset
+            if (!root.TryGetProperty("assets", out var assets)) return (false, null);
+            string? downloadUrl = null;
+            foreach (var asset in assets.EnumerateArray())
+            {
+                string? name = asset.TryGetProperty("name", out var n) ? n.GetString() : null;
+                if (name == "WinWhisperFlow-portable.zip")
+                {
+                    downloadUrl = asset.TryGetProperty("browser_download_url", out var u) ? u.GetString() : null;
+                    break;
+                }
+            }
+
+            if (downloadUrl is null) return (false, null);
+
+            _updateAvailable = true;
+            _newVersion = versionStr;
+            _downloadUrl = downloadUrl;
+            return (true, versionStr);
         }
         catch (Exception ex)
         {
             Debug.WriteLine($"Update check failed: {ex.Message}");
             _updateAvailable = false;
             _newVersion = null;
-            _latestUpdate = null;
+            _downloadUrl = null;
             return (false, null);
         }
         finally
@@ -57,10 +87,38 @@ public class UpdateService
         await _updateGate.WaitAsync();
         try
         {
-            var mgr = GetManager();
-            var info = _latestUpdate ?? await mgr.CheckForUpdatesAsync();
-            if (info is null) return;
-            await mgr.DownloadUpdatesAsync(info, progress);
+            if (_downloadUrl is null) return;
+
+            using var client = new HttpClient();
+            client.DefaultRequestHeaders.UserAgent.ParseAdd(_userAgent);
+            client.Timeout = TimeSpan.FromMinutes(10);
+
+            string tempDir = Path.Combine(Path.GetTempPath(), "WinWhisperFlow-Update");
+            if (Directory.Exists(tempDir)) Directory.Delete(tempDir, true);
+            Directory.CreateDirectory(tempDir);
+
+            string zipPath = Path.Combine(tempDir, "update.zip");
+
+            using (var response = await client.GetAsync(_downloadUrl, HttpCompletionOption.ResponseHeadersRead))
+            {
+                response.EnsureSuccessStatusCode();
+                long totalBytes = response.Content.Headers.ContentLength ?? -1;
+                using var stream = await response.Content.ReadAsStreamAsync();
+                using var fileStream = File.Create(zipPath);
+                var buffer = new byte[81920];
+                long readSoFar = 0;
+                int bytesRead;
+                while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length)) > 0)
+                {
+                    await fileStream.WriteAsync(buffer, 0, bytesRead);
+                    readSoFar += bytesRead;
+                    if (totalBytes > 0)
+                        progress?.Invoke((int)(readSoFar * 100 / totalBytes));
+                }
+            }
+
+            ZipFile.ExtractToDirectory(zipPath, tempDir);
+            File.Delete(zipPath);
         }
         catch (Exception ex)
         {
@@ -75,15 +133,39 @@ public class UpdateService
 
     public void ApplyAndRestart()
     {
-        try
+        _appDir = Path.GetDirectoryName(Assembly.GetEntryAssembly()?.Location);
+        if (_appDir is null) throw new InvalidOperationException("Could not determine app directory.");
+
+        string tempDir = Path.Combine(Path.GetTempPath(), "WinWhisperFlow-Update");
+        string batchPath = Path.Combine(Path.GetTempPath(), "WinWhisperFlow-Update.bat");
+
+        var lines = new[]
         {
-            var mgr = GetManager();
-            mgr.ApplyUpdatesAndRestart(_latestUpdate?.TargetFullRelease);
-        }
-        catch (Exception ex)
+            "@echo off",
+            "chcp 65001 >nul",
+            $"set APP_DIR={_appDir}",
+            $"set TEMP_DIR={tempDir}",
+            "",
+            ">nul 2>&1 net session",
+            "if %errorlevel% neq 0 (",
+            "    powershell -Command \"Start-Process '%~f0' -Verb RunAs\"",
+            "    exit /b",
+            ")",
+            "",
+            $"timeout /t 3 /nobreak >nul",
+            $"xcopy /E /Y /I \"%TEMP_DIR%\\*\" \"%APP_DIR%\"",
+            $"start \"\" \"%APP_DIR%\\WinWhisperFlow.exe\"",
+            "del \"%~f0\""
+        };
+        File.WriteAllText(batchPath, string.Join("\r\n", lines));
+
+        Process.Start(new ProcessStartInfo
         {
-            Debug.WriteLine($"Update apply failed: {ex.Message}");
-            throw;
-        }
+            FileName = batchPath,
+            WindowStyle = ProcessWindowStyle.Hidden,
+            CreateNoWindow = true
+        });
+
+        Environment.Exit(0);
     }
 }

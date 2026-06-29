@@ -61,21 +61,6 @@ jobs:
         run: |
           Compress-Archive -Path artifacts\publish\WinWhisperFlow\* -DestinationPath artifacts\WinWhisperFlow-portable.zip
 
-      - name: Setup Velopack CLI
-        run: dotnet tool install -g vpk
-
-      - name: Pack Velopack release
-        env:
-          TAG: ${{ github.ref_name }}
-        run: |
-          $ver = "$env:TAG" -replace '^v', ''
-          vpk pack -u WinWhisperFlow `
-            -v $ver `
-            -p artifacts\publish\WinWhisperFlow `
-            -o artifacts\vpk `
-            -i Icon.ico `
-            -e WinWhisperFlow.exe
-
       - name: Install Inno Setup
         run: |
           curl -sL "https://jrsoftware.org/download.php/is.exe" -o "$env:TEMP\innosetup.exe"
@@ -104,6 +89,5 @@ jobs:
         with:
           files: |
             artifacts\WinWhisperFlow-portable.zip
-            artifacts\vpk\*
             artifacts\installer\WinWhisperFlowSetup.exe
           generate_release_notes: true

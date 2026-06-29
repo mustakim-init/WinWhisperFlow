@@ -133,14 +133,12 @@ public sealed class RuntimeSetupService
             {
                 "dml" => [
                     "onnxruntime-directml>=1.16.0",
-                    "numpy>=1.21.0,<2.5.0",
                     "librosa>=0.10.0"
                 ],
                 "cuda" => [
-                    "numpy>=1.21.0,<2.5.0",
                     "librosa>=0.10.0"
                 ],
-                _ => ["numpy>=1.21.0,<2.5.0"]
+                _ => []
             };
 
             var failedPackages = new List<string>();

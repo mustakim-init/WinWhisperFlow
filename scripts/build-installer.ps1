@@ -4,16 +4,6 @@ Set-Location $ProjectRoot
 
 & ".\scripts\publish.ps1"
 
-# Read version from csproj
-$csproj = [xml](Get-Content ".\WinWhisperFlow.csproj")
-$version = $csproj.Project.PropertyGroup.VersionPrefix
-if (-not $version) { $version = "0.1.0" }
-
-# Pack Velopack delta packages for in-app updates
-Write-Host "Packing Velopack release..."
-dotnet tool install -g vpk --quiet 2>$null
-vpk pack -u WinWhisperFlow -v $version -p "artifacts\publish\WinWhisperFlow" -o "artifacts\vpk" -i Icon.ico -e WinWhisperFlow.exe
-
 $IsccCommand = Get-Command iscc -ErrorAction SilentlyContinue
 $CandidatePaths = @(
     $IsccCommand.Source,
