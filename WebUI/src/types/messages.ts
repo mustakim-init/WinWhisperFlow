@@ -9,6 +9,12 @@ export interface InitMessage {
   gpuName?: string;
   audioDevices?: string[];
   audioDeviceIndex?: number;
+  detectedDevice?: string;
+  detectedGpuName?: string;
+  cpuName?: string;
+  cpuCores?: number;
+  cpuThreads?: number;
+  totalRam?: number;
 }
 
 export interface SetupProgress {
@@ -77,6 +83,11 @@ export type S2CMessage =
   | { type: 'settings'; settings: Record<string, unknown> }
   | { type: 'clear_history' }
   | { type: 'directory_picked'; path: string | null }
+  | { type: 'update_available'; available: boolean; version: string | null }
+  | { type: 'update_download_started' }
+  | { type: 'update_download_progress'; progress: number }
+  | { type: 'update_download_complete' }
+  | { type: 'update_download_error'; error: string }
   | FileTranscribeProgress;
 
 export interface HistoryEntry {
@@ -110,4 +121,7 @@ export type C2SMessage =
   | { type: 'transcribe_file'; musicMode?: boolean }
   | { type: 'transcribe_file_path'; path: string; musicMode?: boolean }
   | { type: 'transcribe_dropped_file'; data: string; name: string }
-  | { type: 'cancel_file_transcribe' };
+  | { type: 'cancel_file_transcribe' }
+  | { type: 'check_for_updates' }
+  | { type: 'download_update' }
+  | { type: 'apply_update' };

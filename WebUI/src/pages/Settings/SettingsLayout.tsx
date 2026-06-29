@@ -5,7 +5,7 @@ import { AudioPage } from './AudioPage';
 import { TranscriptionSettingsPage } from './TranscriptionPage';
 import { CapturesPage } from './CapturesPage';
 import { StoragePage } from './StoragePage';
-import { GpuPage } from './GpuPage';
+import { HardwarePage } from './HardwarePage';
 import { LogsPage } from './LogsPage';
 import { AboutPage } from './AboutPage';
 
@@ -15,7 +15,7 @@ const settingsTabs = [
   { id: 'transcription', label: 'Transcription' },
   { id: 'captures', label: 'Captures' },
   { id: 'storage', label: 'Storage' },
-  { id: 'gpu', label: 'GPU' },
+  { id: 'hardware', label: 'Hardware' },
   { id: 'logs', label: 'Logs' },
   { id: 'about', label: 'About' },
 ];
@@ -26,7 +26,7 @@ const pages: Record<string, React.FC> = {
   transcription: TranscriptionSettingsPage,
   captures: CapturesPage,
   storage: StoragePage,
-  gpu: GpuPage,
+  hardware: HardwarePage,
   logs: LogsPage,
   about: AboutPage,
 };

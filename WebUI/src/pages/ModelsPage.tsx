@@ -44,6 +44,7 @@ const providerLabel: Record<string, string> = {
 
 export function ModelsPage() {
   const [byProvider, setByProvider] = useState<Record<string, ModelEntry[]>>({});
+  const [loadingModels, setLoadingModels] = useState<Set<string>>(new Set());
   const downloadState = useDownloadStore((s) => s.downloads);
   const pollRef = useRef<ReturnType<typeof setInterval>>(undefined);
 
@@ -65,6 +66,13 @@ export function ModelsPage() {
   }, [downloadState]);
 
   useIpcEffect('models_status', (msg) => {
+    setLoadingModels((prev) => {
+      const next = new Set(prev);
+      for (const m of msg.models) {
+        if (m.loaded) next.delete(m.name);
+      }
+      return next;
+    });
     setByProvider((prev) => {
       const grouped: Record<string, ModelEntry[]> = {};
       for (const m of msg.models) {
@@ -101,6 +109,7 @@ export function ModelsPage() {
   });
 
   useIpcEffect('model_loaded', (msg) => {
+    setLoadingModels((prev) => { const next = new Set(prev); next.delete(msg.model); return next; });
     setByProvider((prev) => {
       const next: Record<string, ModelEntry[]> = {};
       for (const [prov, list] of Object.entries(prev)) {
@@ -134,6 +143,7 @@ export function ModelsPage() {
   };
 
   const handleLoad = (model: string) => {
+    setLoadingModels((prev) => { const next = new Set(prev); next.add(model); return next; });
     send({ type: 'load_model', model });
   };
 
@@ -261,9 +271,10 @@ export function ModelsPage() {
                   size="sm"
                   className="h-8 min-w-16 text-xs"
                   onClick={() => handleLoad(m.name)}
-                  disabled={m.loaded}
+                  disabled={m.loaded || loadingModels.has(m.name)}
                 >
-                  {m.loaded ? <Check size={13} className="text-emerald-400" /> : 'Load'}
+                  {loadingModels.has(m.name) ? <Loader2 size={13} className="animate-spin" /> :
+                   m.loaded ? <Check size={13} className="text-emerald-400" /> : 'Load'}
                 </Button>
               )}
             </div>

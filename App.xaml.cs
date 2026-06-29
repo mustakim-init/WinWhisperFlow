@@ -1,4 +1,5 @@
 using System.IO;
+using Velopack;
 
 namespace WinWhisperFlow;
 
@@ -10,6 +11,7 @@ public partial class App : System.Windows.Application
 
     protected override void OnStartup(System.Windows.StartupEventArgs e)
     {
+        VelopackApp.Build().Run();
         base.OnStartup(e);
 
         DispatcherUnhandledException += (_, args) =>

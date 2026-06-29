@@ -2,6 +2,8 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.IO;
+using System.Management;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.Wpf;
@@ -23,6 +25,7 @@ public sealed class UIBridge : IDisposable
     private readonly Func<bool> _detectDarkMode;
     private readonly OverlayManager? _overlay;
     private readonly SoundEffectService _sfx;
+    private readonly UpdateService _updateService;
     private readonly GpuDetectionService _gpuDetect = new();
     private readonly FFmpegService _ffmpeg = new();
     private readonly SourceSeparationService _sourceSeparation = new();
@@ -65,7 +68,8 @@ public sealed class UIBridge : IDisposable
         StartupService startup,
         Func<bool> detectDarkMode,
         OverlayManager? overlay,
-        SoundEffectService sfx)
+        SoundEffectService sfx,
+        UpdateService updateService)
     {
         _webView = webView;
         _whisper = whisper;
@@ -79,6 +83,7 @@ public sealed class UIBridge : IDisposable
         _detectDarkMode = detectDarkMode;
         _overlay = overlay;
         _sfx = sfx;
+        _updateService = updateService;
 
         _onAudioLevel = (_, level) =>
             Post(new { type = "audio_level", level });
@@ -429,7 +434,8 @@ public sealed class UIBridge : IDisposable
                 case "bridge_ready":
                     if (_modelLoaded)
                     {
-                        Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, loaded = true, model = GetCompositeName(), device = _loadedDevice, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId });
+                        var (dd, dgn, cn, cc, ct, tr) = GetHardwareInfo();
+                        Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, loaded = true, model = GetCompositeName(), device = _loadedDevice, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId, detectedDevice = dd, detectedGpuName = dgn, cpuName = cn, cpuCores = cc, cpuThreads = ct, totalRam = tr });
                         Post(new { type = "model_loaded", model = GetCompositeName(), device = _loadedDevice, note = ModelNotes.GetModelNote(_loadedModel, _loadedDevice) });
                     }
                     else if (!_healthCheckRunning)
@@ -479,6 +485,18 @@ public sealed class UIBridge : IDisposable
                     try { File.AppendAllText(RuntimePaths.LogPath, $"[JS {consoleLevel}] {consoleMsg}{Environment.NewLine}"); } catch { }
                     break;
                 }
+
+                case "check_for_updates":
+                    _ = CheckForUpdatesAsync();
+                    break;
+
+                case "download_update":
+                    _ = DownloadUpdateAsync();
+                    break;
+
+                case "apply_update":
+                    _updateService.ApplyAndRestart();
+                    break;
 
                 case "toggle_listening":
                     _ = ToggleListeningAsync();
@@ -843,7 +861,8 @@ public sealed class UIBridge : IDisposable
                 ready = await _runtimeSetup.IsReadyAsync();
                 if (!ready)
                 {
-                    Post(new { type = "init", darkMode = _detectDarkMode(), ready = false, error = "Setup failed. Check the logs and try again." });
+                    var (hdd3, hdgn3, hcn3, hcc3, hct3, htr3) = GetHardwareInfo();
+                    Post(new { type = "init", darkMode = _detectDarkMode(), ready = false, error = "Setup failed. Check the logs and try again.", detectedDevice = hdd3, detectedGpuName = hdgn3, cpuName = hcn3, cpuCores = hcc3, cpuThreads = hct3, totalRam = htr3 });
                     return;
                 }
             }
@@ -851,7 +870,8 @@ public sealed class UIBridge : IDisposable
             // Unblock UI immediately — setup succeeded
             // Detect GPU first so the init message carries the real device (not _loadedDevice, which stays "cpu" until a model loads)
             var recommended = SttRuntimeOptions.RecommendedForThisPc;
-            Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, loaded = false, model = GetCompositeName(), device = recommended.Provider, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId });
+            var (hdd4, hdgn4, hcn4, hcc4, hct4, htr4) = GetHardwareInfo();
+            Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, loaded = false, model = GetCompositeName(), device = recommended.Provider, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId, detectedDevice = hdd4, detectedGpuName = hdgn4, cpuName = hcn4, cpuCores = hcc4, cpuThreads = hct4, totalRam = htr4 });
             Post(new { type = "settings", settings = new {
                 startup = _startup.IsEnabled(),
                 language = _selectedLanguage,
@@ -870,7 +890,8 @@ public sealed class UIBridge : IDisposable
         {
             SetModelError(ex.Message);
             Post(new { type = "log", message = $"Setup failed: {ex.Message}" });
-            Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, error = ex.Message, loaded = false, model = GetCompositeName(), device = SttRuntimeOptions.RecommendedForThisPc.Provider, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId });
+            var (hdd5, hdgn5, hcn5, hcc5, hct5, htr5) = GetHardwareInfo();
+            Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, error = ex.Message, loaded = false, model = GetCompositeName(), device = SttRuntimeOptions.RecommendedForThisPc.Provider, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId, detectedDevice = hdd5, detectedGpuName = hdgn5, cpuName = hcn5, cpuCores = hcc5, cpuThreads = hct5, totalRam = htr5 });
             Post(new { type = "status_update", text = "Setup failed", variant = "error" });
             Post(new { type = "notification", title = "Startup failed", message = ex.Message, variant = "error" });
         }
@@ -915,7 +936,8 @@ public sealed class UIBridge : IDisposable
             SetModelLoaded(bestModel, actualDevice);
 
             string loadedComposite = $"{bestModel}-{actualDevice}";
-            Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, loaded = true, model = loadedComposite, device = actualDevice, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId });
+            var (hdd, hdgn, hcn, hcc, hct, htr) = GetHardwareInfo();
+            Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, loaded = true, model = loadedComposite, device = actualDevice, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId, detectedDevice = hdd, detectedGpuName = hdgn, cpuName = hcn, cpuCores = hcc, cpuThreads = hct, totalRam = htr });
             Post(new { type = "settings", settings = new {
                 startup = _startup.IsEnabled(),
                 language = _selectedLanguage,
@@ -937,7 +959,8 @@ public sealed class UIBridge : IDisposable
         {
             SetModelError(ex.Message);
             Post(new { type = "log", message = $"Model load failed: {ex.Message}" });
-            Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, loaded = false, error = $"Model load failed: {ex.Message}", model = GetCompositeName(), device = _loadedDevice, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId });
+            var (hdd2, hdgn2, hcn2, hcc2, hct2, htr2) = GetHardwareInfo();
+            Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, loaded = false, error = $"Model load failed: {ex.Message}", model = GetCompositeName(), device = _loadedDevice, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId, detectedDevice = hdd2, detectedGpuName = hdgn2, cpuName = hcn2, cpuCores = hcc2, cpuThreads = hct2, totalRam = htr2 });
             Post(new { type = "settings", settings = new {
                 startup = _startup.IsEnabled(),
                 language = _selectedLanguage,
@@ -989,14 +1012,67 @@ public sealed class UIBridge : IDisposable
         bool gpuOk = await _runtimeSetup.IsGpuProviderReadyAsync();
         bool ready = await _runtimeSetup.IsReadyAsync();
 
+        var (hdd6, hdgn6, hcn6, hcc6, hct6, htr6) = GetHardwareInfo();
         if (ready)
         {
-            Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, loaded = false, model = GetCompositeName(), device = _gpuDetect.Detect().provider, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId });
+            Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, loaded = false, model = GetCompositeName(), device = _gpuDetect.Detect().provider, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId, detectedDevice = hdd6, detectedGpuName = hdgn6, cpuName = hcn6, cpuCores = hcc6, cpuThreads = hct6, totalRam = htr6 });
         }
         else
         {
-            Post(new { type = "init", darkMode = _detectDarkMode(), ready = false, error = "Setup still failed. Check the logs and try again." });
+            Post(new { type = "init", darkMode = _detectDarkMode(), ready = false, error = "Setup still failed. Check the logs and try again.", detectedDevice = hdd6, detectedGpuName = hdgn6, cpuName = hcn6, cpuCores = hcc6, cpuThreads = hct6, totalRam = htr6 });
         }
+    }
+
+    [DllImport("kernel32.dll")]
+    private static extern bool GlobalMemoryStatusEx(ref MEMORYSTATUSEX lpBuffer);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MEMORYSTATUSEX
+    {
+        public uint dwLength;
+        public uint dwMemoryLoad;
+        public ulong ullTotalPhys;
+        public ulong ullAvailPhys;
+        public ulong ullTotalPageFile;
+        public ulong ullAvailPageFile;
+        public ulong ullTotalVirtual;
+        public ulong ullAvailVirtual;
+        public ulong ullAvailExtendedVirtual;
+    }
+
+    private static long GetTotalPhysicalRam()
+    {
+        var mem = new MEMORYSTATUSEX { dwLength = (uint)Marshal.SizeOf<MEMORYSTATUSEX>() };
+        if (GlobalMemoryStatusEx(ref mem))
+            return (long)mem.ullTotalPhys;
+        return 0;
+    }
+
+    private static (string name, int cores, int threads) GetCpuInfo()
+    {
+        string name = "";
+        int cores = 0;
+        int threads = 0;
+        try
+        {
+            using var searcher = new ManagementObjectSearcher("SELECT Name, NumberOfCores, NumberOfLogicalProcessors FROM Win32_Processor");
+            foreach (var obj in searcher.Get())
+            {
+                name = obj["Name"]?.ToString()?.Trim() ?? "";
+                cores = Convert.ToInt32(obj["NumberOfCores"]);
+                threads = Convert.ToInt32(obj["NumberOfLogicalProcessors"]);
+                break;
+            }
+        }
+        catch { }
+        return (name, cores, threads);
+    }
+
+    private (string detectedDevice, string detectedGpuName, string cpuName, int cpuCores, int cpuThreads, long totalRam) GetHardwareInfo()
+    {
+        var detected = _gpuDetect.Detect();
+        var cpu = GetCpuInfo();
+        return (detected.provider, detected.gpuName, cpu.name, cpu.cores, cpu.threads, GetTotalPhysicalRam());
     }
 
     private static long GetDirectorySize(string path)
@@ -1296,6 +1372,39 @@ public sealed class UIBridge : IDisposable
                 Post(new { type = "directory_picked", path = (string?)null });
             }
         });
+    }
+
+    private async Task CheckForUpdatesAsync()
+    {
+        var (available, version) = await _updateService.CheckForUpdatesAsync();
+        Post(new
+        {
+            type = "update_available",
+            available,
+            version,
+        });
+        if (available)
+        {
+            Post(new { type = "log", message = $"Update available: {version}" });
+        }
+    }
+
+    private async Task DownloadUpdateAsync()
+    {
+        Post(new { type = "update_download_started" });
+        try
+        {
+            Action<int>? progressAction = p =>
+            {
+                Post(new { type = "update_download_progress", progress = p / 100.0 });
+            };
+            await _updateService.DownloadUpdateAsync(progressAction);
+            Post(new { type = "update_download_complete" });
+        }
+        catch (Exception ex)
+        {
+            Post(new { type = "update_download_error", error = ex.Message });
+        }
     }
 
     public void Dispose()

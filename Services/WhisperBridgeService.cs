@@ -244,6 +244,7 @@ public sealed class WhisperBridgeService : IDisposable
         if (provider == "demucs")
         {
             await EnsureDemucsModelDownloadedAsync(compositeName, ct);
+            DownloadProgress?.Invoke(this, new(model, 1, 1, "done", CompositeName: compositeName));
             return;
         }
 

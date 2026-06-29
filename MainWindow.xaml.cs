@@ -23,6 +23,7 @@ public partial class MainWindow : Window
     private readonly PhoneMicService _phoneMic = new();
     private readonly TranscriptionHistory _transcriptionHistory = new();
     private readonly SoundEffectService _sfx = new();
+    private readonly UpdateService _updateService = new();
     private UIBridge? _bridge;
     private OverlayManager? _overlay;
     private Forms.NotifyIcon? _notifyIcon;
@@ -98,7 +99,7 @@ public partial class MainWindow : Window
                     WebView, _whisperBridge, _audioCapture, _phoneMic,
                     _textInjector, _hotkeyService, _runtimeSetup,
                     _transcriptionHistory, _startupService, DetectWindowsDarkMode,
-                    _overlay, _sfx);
+                    _overlay, _sfx, _updateService);
 
                 WebView.Drop += OnWebViewDrop;
                 WebView.DragOver += OnWebViewDragOver;

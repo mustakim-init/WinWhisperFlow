@@ -39,11 +39,23 @@ interface AppState {
   setupOverall: number;
   setupError: string | undefined;
   availableModels: ModelInfo[];
+  detectedDevice: string;
+  detectedGpuName: string;
+  cpuName: string;
+  cpuCores: number;
+  cpuThreads: number;
+  totalRam: number;
   fileTranscribing: boolean;
   fileName: string | null;
   fileProgress: number;
   fileStage: string;
   fileElapsed: number;
+  updateAvailable: boolean;
+  updateVersion: string | null;
+  updateDownloading: boolean;
+  updateProgress: number;
+  updateReady: boolean;
+  updateError: string | null;
 }
 
 export interface LogEntry {
@@ -82,6 +94,12 @@ let state: AppState = {
   setupOverall: 0,
   setupError: undefined,
   availableModels: [],
+  detectedDevice: 'cpu',
+  detectedGpuName: '',
+  cpuName: '',
+  cpuCores: 0,
+  cpuThreads: 0,
+  totalRam: 0,
   fileTranscribing: false,
   fileName: null,
   fileProgress: 0,
@@ -96,6 +114,12 @@ let state: AppState = {
   musicTranscript: '',
   musicMeta: '',
   fileMusicMode: false,
+  updateAvailable: false,
+  updateVersion: null as string | null,
+  updateDownloading: false,
+  updateProgress: 0,
+  updateReady: false,
+  updateError: null as string | null,
 };
 
 const listeners = new Set<Listener>();
@@ -140,6 +164,12 @@ export function setSetupSteps(s: SetupStep[]) { set({ setupSteps: s }); }
 export function setSetupOverall(o: number) { set({ setupOverall: o }); }
 export function setSetupError(e: string | undefined) { set({ setupError: e }); }
 export function setAvailableModels(ms: ModelInfo[]) { set({ availableModels: ms }); }
+export function setDetectedDevice(d: string) { set({ detectedDevice: d }); }
+export function setDetectedGpuName(n: string) { set({ detectedGpuName: n }); }
+export function setCpuName(n: string) { set({ cpuName: n }); }
+export function setCpuCores(c: number) { set({ cpuCores: c }); }
+export function setCpuThreads(t: number) { set({ cpuThreads: t }); }
+export function setTotalRam(r: number) { set({ totalRam: r }); }
 export function setFileTranscribing(v: boolean) { set({ fileTranscribing: v }); }
 export function setFileName(n: string | null) { set({ fileName: n }); }
 export function setFileProgress(p: number) { set({ fileProgress: p }); }
@@ -151,6 +181,11 @@ export function setVoicePartialTranscript(t: string, meta: string) { set({ voice
 export function setFileTranscript(t: string, meta: string) { set({ fileTranscript: t, fileMeta: meta }); }
 export function setMusicTranscript(t: string, meta: string) { set({ musicTranscript: t, musicMeta: meta }); }
 export function setFileMusicMode(v: boolean) { set({ fileMusicMode: v }); }
+export function setUpdateAvailable(v: boolean, ver: string | null) { set({ updateAvailable: v, updateVersion: ver }); }
+export function setUpdateDownloading(v: boolean) { set({ updateDownloading: v }); }
+export function setUpdateProgress(p: number) { set({ updateProgress: p }); }
+export function setUpdateReady(v: boolean) { set({ updateReady: v }); }
+export function setUpdateError(e: string | null) { set({ updateError: e }); }
 
 export function addHistory(entry: HistoryEntry) {
   set({ history: [entry, ...state.history] });

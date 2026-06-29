@@ -9,6 +9,8 @@ import {
   setFileTranscribing, setFileName, setFileProgress, setFileStage, setFileElapsed, resetFileState,
   getState,
   setVoiceTranscript, setVoicePartialTranscript, setFileTranscript, setMusicTranscript,
+  setDetectedDevice, setDetectedGpuName, setCpuName, setCpuCores, setCpuThreads, setTotalRam,
+  setUpdateAvailable, setUpdateDownloading, setUpdateProgress, setUpdateReady, setUpdateError,
 } from '../lib/store';
 import { useUiStore } from '../stores/uiStore';
 import { useDownloadStore } from '../stores/downloadStore';
@@ -46,6 +48,13 @@ export function useGlobalBridgeSync() {
           if (msg.darkMode !== undefined) useUiStore.getState().setDarkMode(msg.darkMode);
           useUiStore.getState().setIsReady(msg.ready);
           setIsReady(msg.ready);
+          // Set detected (detected) hardware info only once — never overwritten by model_loaded
+          if (msg.detectedDevice) setDetectedDevice(msg.detectedDevice);
+          if (msg.detectedGpuName) setDetectedGpuName(msg.detectedGpuName);
+          if (msg.cpuName) setCpuName(msg.cpuName);
+          if (msg.cpuCores !== undefined) setCpuCores(msg.cpuCores);
+          if (msg.cpuThreads !== undefined) setCpuThreads(msg.cpuThreads);
+          if (msg.totalRam !== undefined) setTotalRam(msg.totalRam);
           if (msg.ready && msg.error) {
             setStatus(msg.error, 'error');
             useUiStore.getState().setStatus(msg.error, 'error');
@@ -192,6 +201,30 @@ export function useGlobalBridgeSync() {
             resetFileState();
             setStatus('Transcription failed', 'error');
           }
+          break;
+
+        case 'update_available':
+          setUpdateAvailable(msg.available, msg.version);
+          break;
+
+        case 'update_download_started':
+          setUpdateDownloading(true);
+          setUpdateProgress(0);
+          setUpdateError(null);
+          break;
+
+        case 'update_download_progress':
+          setUpdateProgress(msg.progress);
+          break;
+
+        case 'update_download_complete':
+          setUpdateDownloading(false);
+          setUpdateReady(true);
+          break;
+
+        case 'update_download_error':
+          setUpdateDownloading(false);
+          setUpdateError(msg.error);
           break;
 
         case 'notification':

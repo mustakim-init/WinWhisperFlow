@@ -1,0 +1,49 @@
+name: Build
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: windows-2022
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Setup Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Restore .NET packages
+        run: dotnet restore
+
+      - name: Install WebUI dependencies
+        working-directory: WebUI
+        run: npm ci
+
+      - name: Build WebUI
+        working-directory: WebUI
+        run: npm run build
+
+      - name: Build .NET
+        run: dotnet build --no-restore -c Release
+
+      - name: Upload WebUI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: webui-dist
+          path: WebUI/dist/

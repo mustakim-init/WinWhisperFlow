@@ -1,4 +1,5 @@
 #define MyAppName "WinWhisper Flow"
+// Must match <VersionPrefix> in WinWhisperFlow.csproj
 #define MyAppVersion "0.1.0"
 #define MyAppPublisher "WinWhisper Flow"
 #define MyAppExeName "WinWhisperFlow.exe"
