@@ -34,7 +34,17 @@ public partial class OverlayWindow : Window
             // Must be set BEFORE EnsureCoreWebView2Async for transparency to work
             OverlayWebView.DefaultBackgroundColor = System.Drawing.Color.FromArgb(0, 0, 0, 0);
 
-            await OverlayWebView.EnsureCoreWebView2Async();
+            // Transparent overlay windows need software rendering — GPU compositing
+            // causes E_ACCESSDENIED (0x80070005) on layered windows with WS_EX_TRANSPARENT
+            string webviewData = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "WinWhisperFlow", "WebView2", "overlay");
+            var env = await CoreWebView2Environment.CreateAsync(null, webviewData,
+                new CoreWebView2EnvironmentOptions
+                {
+                    AdditionalBrowserArguments = "--disable-gpu --disable-features=msWebView2PdfDownload"
+                });
+            await OverlayWebView.EnsureCoreWebView2Async(env);
 
             OverlayWebView.CoreWebView2.Settings.IsScriptEnabled = true;
             OverlayWebView.CoreWebView2.Settings.IsWebMessageEnabled = true;
