@@ -12,6 +12,10 @@ public static class RuntimePaths
     public static string UserVenvPython { get; } =
         Path.Combine(RuntimeRoot, ".venv", "Scripts", "python.exe");
 
+    /// <summary>Path to the user-writable Python copy (bundled Python copied to AppData).</summary>
+    public static string RuntimePython { get; } =
+        Path.Combine(RuntimeRoot, "python", "python.exe");
+
     public static string LogPath { get; } = Path.Combine(AppDataRoot, "winwhisper.log");
 
     private static string? _customModelsRoot;

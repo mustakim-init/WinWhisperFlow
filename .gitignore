@@ -38,6 +38,9 @@ models/
 # Python build outputs
 stt_engine/build/
 
+# Bundled Python (downloaded at build time)
+stt_engine/python/
+
 # Separate git repos — tracked independently
 whispermicrelay/
 PhoneMicVirtualCable/

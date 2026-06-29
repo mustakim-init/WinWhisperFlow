@@ -29,18 +29,14 @@
   <ItemGroup>
     <None Include="stt_engine\config.json" CopyToOutputDirectory="PreserveNewest" />
     <None Include="stt_engine\requirements.txt" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="stt_engine\preload_model.py" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="stt_engine\requirements_gpu.txt" CopyToOutputDirectory="PreserveNewest" />
     <None Include="stt_engine\whisper_worker.py" CopyToOutputDirectory="PreserveNewest" />
     <None Include="stt_engine\whisper_worker_gpu.py" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="stt_engine\music_detector.py" CopyToOutputDirectory="PreserveNewest" />
     <None Include="stt_engine\demucs_wrapper.py" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="stt_engine\download_gpu_model.py" CopyToOutputDirectory="PreserveNewest" />
     <None Include="stt_engine\download_cpu_model.py" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="stt_engine\download_gpu_model.py" CopyToOutputDirectory="PreserveNewest" />
     <None Include="stt_engine\download_demucs_model.py" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="stt_engine\check_demucs_model.py" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="stt_engine\requirements_gpu.txt" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="stt_engine\dist\whisper_worker.exe" Condition="Exists('stt_engine\dist\whisper_worker.exe')" CopyToOutputDirectory="PreserveNewest" />
-    <None Include="stt_engine\dist\whisper_worker_gpu.exe" Condition="Exists('stt_engine\dist\whisper_worker_gpu.exe')" CopyToOutputDirectory="PreserveNewest" />
+    <None Include="stt_engine\python\**\*" Condition="Exists('stt_engine\python\python.exe')" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

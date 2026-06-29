@@ -77,11 +77,13 @@ public sealed class SourceSeparationService
     {
         string[] candidates =
         [
+            RuntimePaths.RuntimePython,
             RuntimePaths.UserVenvPython,
+            Path.Combine(AppContext.BaseDirectory, "stt_engine", "python", "python.exe"),
             Path.Combine(Environment.CurrentDirectory, ".venv", "Scripts", "python.exe"),
             Path.Combine(AppContext.BaseDirectory, ".venv", "Scripts", "python.exe"),
         ];
         return candidates.FirstOrDefault(File.Exists)
-            ?? throw new FileNotFoundException("Python interpreter not found. Run setup first.");
+            ?? throw new FileNotFoundException("Python interpreter not found. Reinstall WinWhisperFlow.");
     }
 }

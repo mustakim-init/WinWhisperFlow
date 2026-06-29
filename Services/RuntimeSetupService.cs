@@ -11,9 +11,7 @@ public sealed class RuntimeSetupService
 
     public async Task<bool> IsReadyAsync()
     {
-        string userPython = RuntimePaths.UserVenvPython;
-        string? projectPython = FindProjectVenvPython();
-        string? python = File.Exists(userPython) ? userPython : (File.Exists(projectPython) ? projectPython : null);
+        string python = ResolvePython();
         if (python is null) return false;
 
         // Check that basic Python packages are importable
@@ -21,43 +19,44 @@ public sealed class RuntimeSetupService
         return await RunSilentAsync(python, $"-c \"{code}\"", null, 30000) == 0;
     }
 
-    public async Task<bool> IsGpuProviderReadyAsync()
+    public Task<bool> IsGpuProviderReadyAsync()
     {
-        string python = ResolvePython();
-        if (python is null) return false;
-
         var gpu = new GpuDetectionService();
         var (provider, _) = gpu.Detect();
-
-        if (provider is "cuda")
-        {
-            string code = "import sys; import onnxruntime; assert 'CUDAExecutionProvider' in onnxruntime.get_available_providers()";
-            return await RunSilentAsync(python, $"-c \"{code}\"", null, 30000) == 0;
-        }
-
-        if (provider is "dml")
-        {
-            string code = "import sys; import onnxruntime; assert 'DmlExecutionProvider' in onnxruntime.get_available_providers()";
-            return await RunSilentAsync(python, $"-c \"{code}\"", null, 30000) == 0;
-        }
-
-        return false;
+        return Task.FromResult(provider is "cuda" or "dml");
     }
 
     private static string ResolvePython()
     {
-        string userPython = RuntimePaths.UserVenvPython;
-        string? projectPython = FindProjectVenvPython();
-        return File.Exists(userPython) ? userPython
-             : File.Exists(projectPython) ? projectPython
-             : null!;
+        string[] candidates =
+        [
+            RuntimePaths.RuntimePython,
+            RuntimePaths.UserVenvPython,
+            Path.Combine(AppContext.BaseDirectory, "stt_engine", "python", "python.exe"),
+            Path.Combine(Environment.CurrentDirectory, ".venv", "Scripts", "python.exe"),
+            Path.Combine(AppContext.BaseDirectory, ".venv", "Scripts", "python.exe"),
+        ];
+        return candidates.FirstOrDefault(File.Exists)
+            ?? throw new FileNotFoundException("Python interpreter not found. Reinstall WinWhisperFlow.");
+    }
+
+    private static string ResolveBundledPython()
+    {
+        string[] candidates =
+        [
+            Path.Combine(AppContext.BaseDirectory, "stt_engine", "python", "python.exe"),
+            Path.Combine(Environment.CurrentDirectory, "stt_engine", "python", "python.exe"),
+            "python",
+        ];
+        return candidates.FirstOrDefault(File.Exists)
+            ?? throw new FileNotFoundException("Python interpreter not found. Reinstall WinWhisperFlow.");
     }
 
     public async Task AutoSetupAsync(CancellationToken ct = default)
     {
         var steps = new List<SetupStep>
         {
-            new("python", "Checking Python...", "pending"),
+            new("python", "Setting up Python runtime...", "pending"),
             new("venv", "Creating virtual environment...", "pending"),
             new("packages", "Installing dependencies...", "pending"),
             new("gpu-packages", "Installing GPU dependencies...", "pending"),
@@ -66,50 +65,51 @@ public sealed class RuntimeSetupService
 
         void Emit() => StepsChanged?.Invoke(this, steps.AsReadOnly());
 
-        // Step 1: Check Python
+        // Step 0: Find bundled Python
         steps[0] = steps[0] with { Status = "running" };
         Emit();
 
-        bool pythonFound = await CheckPythonExistsAsync(ct);
-        if (!pythonFound)
-        {
-            steps[0] = steps[0] with { Status = "error", Error = "Python 3.10+ not found. Install from python.org" };
-            Emit();
-            return;
-        }
+        string bundledPython = ResolveBundledPython();
         steps[0] = steps[0] with { Status = "done" };
         Emit();
         ct.ThrowIfCancellationRequested();
 
-        // Step 2: Create venv if needed
+        // Step 1: Copy bundled Python to user-writable location if needed
         steps[1] = steps[1] with { Status = "running" };
         Emit();
 
-        string venvPath = Path.Combine(RuntimePaths.RuntimeRoot, ".venv");
-        string venvPython = Path.Combine(venvPath, "Scripts", "python.exe");
+        string pythonDir = Path.Combine(RuntimePaths.RuntimeRoot, "python");
+        string userPythonPath = Path.Combine(pythonDir, "python.exe");
 
-        if (!File.Exists(venvPython))
+        if (!File.Exists(userPythonPath))
         {
             Directory.CreateDirectory(RuntimePaths.RuntimeRoot);
-            int venvResult = await RunSilentAsync("python", $" -m venv \"{venvPath}\"", RuntimePaths.RuntimeRoot, 60000, ct);
-            if (venvResult != 0 || !File.Exists(venvPython))
+            string bundledPythonDir = Path.GetDirectoryName(bundledPython)!;
+            try
             {
-                try { Directory.Delete(venvPath, recursive: true); } catch { }
-                steps[1] = steps[1] with { Status = "error", Error = "Failed to create virtual environment." };
+                CopyDirectory(bundledPythonDir, pythonDir);
+            }
+            catch (Exception ex)
+            {
+                try { Directory.Delete(pythonDir, recursive: true); } catch { }
+                steps[1] = steps[1] with { Status = "error", Error = $"Failed to copy Python runtime: {ex.Message}" };
                 Emit();
                 return;
             }
         }
+
+        // Use the user copy for pip (not the read-only bundled one)
+        string runtimePython = File.Exists(userPythonPath) ? userPythonPath : bundledPython;
         steps[1] = steps[1] with { Status = "done" };
         Emit();
         ct.ThrowIfCancellationRequested();
 
-        // Step 3: Install packages
+        // Step 2: Install packages into user Python copy
         steps[2] = steps[2] with { Status = "running" };
         Emit();
 
         string requirementsPath = ResolveRequirementsPath();
-        int pipResult = await RunSilentAsync(venvPython, $"-m pip install -r \"{requirementsPath}\"", null, 600000, ct);
+        int pipResult = await RunSilentAsync(runtimePython, $"-m pip install -r \"{requirementsPath}\"", null, 600000, ct);
         if (pipResult != 0)
         {
             steps[2] = steps[2] with { Status = "error", Error = "pip install failed. Check your internet connection." };
@@ -152,7 +152,7 @@ public sealed class RuntimeSetupService
                         steps[3] = steps[3] with { Label = $"Retrying {pkg} (attempt {attempt}/2)" };
                         Emit();
                     }
-                    int exitCode = await RunSilentAsync(venvPython, $"-m pip install \"{pkg}\"", null, 600000, ct);
+                    int exitCode = await RunSilentAsync(runtimePython, $"-m pip install \"{pkg}\"", null, 600000, ct);
                     if (exitCode == 0) { ok = true; break; }
                 }
                 if (!ok) failedPackages.Add(pkg.Split('>', '<', '=')[0]);
@@ -191,12 +191,6 @@ public sealed class RuntimeSetupService
             steps[4] = steps[4] with { Status = "done", Label = "No GPU acceleration detected. Using CPU." };
         }
         Emit();
-    }
-
-    private static async Task<bool> CheckPythonExistsAsync(CancellationToken ct)
-    {
-        int exitCode = await RunSilentAsync("python", "--version", null, 10000, ct);
-        return exitCode == 0;
     }
 
     private static async Task<int> RunSilentAsync(string fileName, string arguments, string? workingDir, int timeoutMs, CancellationToken ct = default)
@@ -256,5 +250,19 @@ public sealed class RuntimeSetupService
         };
 
         return candidates.FirstOrDefault(File.Exists);
+    }
+
+    private static void CopyDirectory(string source, string destination)
+    {
+        Directory.CreateDirectory(destination);
+        foreach (string dir in Directory.GetDirectories(source, "*", SearchOption.AllDirectories))
+        {
+            Directory.CreateDirectory(dir.Replace(source, destination));
+        }
+        foreach (string file in Directory.GetFiles(source, "*", SearchOption.AllDirectories))
+        {
+            string dest = file.Replace(source, destination);
+            File.Copy(file, dest, overwrite: true);
+        }
     }
 }

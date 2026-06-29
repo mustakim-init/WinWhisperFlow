@@ -82,12 +82,17 @@ jobs:
         run: |
           & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\WinWhisperFlow.iss
 
+      - name: Generate changelog
+        run: |
+          $tag = "${{ github.ref_name }}"
+          .\scripts\generate-changelog.ps1 -OutputFile "artifacts\RELEASE_CHANGELOG.md" -Tag $tag
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         env:
           ACTIONS_ALLOW_USE_UNSECURE_NODE_VERSION: true
         with:
+          body_path: artifacts\RELEASE_CHANGELOG.md
           files: |
             artifacts\WinWhisperFlow-portable.zip
             artifacts\installer\WinWhisperFlowSetup.exe
-          generate_release_notes: true

@@ -401,18 +401,6 @@ public sealed class UIBridge : IDisposable
         }
     }
 
-    private static string ResolvePython()
-    {
-        string[] candidates =
-        [
-            RuntimePaths.UserVenvPython,
-            Path.Combine(Environment.CurrentDirectory, ".venv", "Scripts", "python.exe"),
-            Path.Combine(AppContext.BaseDirectory, ".venv", "Scripts", "python.exe"),
-        ];
-        return candidates.FirstOrDefault(File.Exists)
-            ?? throw new FileNotFoundException("Python interpreter not found. Run setup first.");
-    }
-
     private void OnWebMessage(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
         try
