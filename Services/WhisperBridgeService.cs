@@ -135,7 +135,7 @@ public sealed class WhisperBridgeService : IDisposable
         }
     }
 
-    public async Task<TranscriptionResult> TranscribeAsync(string audioPath, string? language = null, bool fileMode = false, CancellationToken ct = default)
+    public async Task<TranscriptionResult> TranscribeAsync(string audioPath, string? language = null, bool fileMode = false, int? beamSize = null, double? temperature = null, bool? vadFilter = null, double? noSpeechThreshold = null, double? logProbThreshold = null, Dictionary<string, object?>? extraSettings = null, CancellationToken ct = default)
     {
         await _gate.WaitAsync(ct);
         try
@@ -144,7 +144,26 @@ public sealed class WhisperBridgeService : IDisposable
             var proc = _process;
             if (proc is null || proc.HasExited) throw new InvalidOperationException("STT worker is not running.");
 
-            var request = new { type = "transcribe", audio_path = audioPath, language, file_mode = fileMode };
+            var requestDict = new Dictionary<string, object?>
+            {
+                ["type"] = "transcribe",
+                ["audio_path"] = audioPath,
+                ["language"] = language,
+                ["file_mode"] = fileMode,
+                ["beam_size"] = beamSize,
+                ["temperature"] = temperature,
+                ["vad_filter"] = vadFilter,
+                ["no_speech_threshold"] = noSpeechThreshold,
+                ["log_prob_threshold"] = logProbThreshold,
+            };
+            if (extraSettings is not null)
+            {
+                foreach (var kvp in extraSettings)
+                {
+                    requestDict[kvp.Key] = kvp.Value;
+                }
+            }
+            var request = requestDict;
             await proc.StandardInput.WriteLineAsync(JsonSerializer.Serialize(request));
 
             // Two-layer safety: sliding-window timeout + process exit watchdog

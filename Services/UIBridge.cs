@@ -44,6 +44,20 @@ public sealed class UIBridge : IDisposable
     private bool _healthCheckRunning;
     private string? _gpuCache;
     private bool _autoPasteEnabled = true;
+    private int _beamSize = 1;
+    private double _temperature = 0;
+    private bool _vadFilter = false;
+    private double _noSpeechThreshold = 0.45;
+    private double _logProbThreshold = -0.8;
+    private int _bestOf = 5;
+    private double _repetitionPenalty = 1;
+    private int _noRepeatNgramSize = 0;
+    private double _lengthPenalty = 1;
+    private double _compressionRatioThreshold = 2.4;
+    private double _promptResetOnTemperature = 0.5;
+    private bool _conditionOnPreviousText = true;
+    private string? _hotwords = null;
+    private double _hallucinationSilenceThreshold = 0;
     private readonly object _ctsLock = new();
 
     private readonly EventHandler<float> _onAudioLevel;
@@ -95,7 +109,7 @@ public sealed class UIBridge : IDisposable
             Post(new { type = "status_update", text = "Transcribing phone audio\u2026", variant = "warning" });
             try
             {
-                var result = await _whisper.TranscribeAsync(e.WavPath, GetSelectedLanguage());
+                var result = await _whisper.TranscribeAsync(e.WavPath, GetSelectedLanguage(), beamSize: _beamSize, temperature: _temperature, vadFilter: _vadFilter, noSpeechThreshold: _noSpeechThreshold, logProbThreshold: _logProbThreshold, extraSettings: BuildExtraSettings());
                 string text = result.Text.Trim();
                 await PublishTranscriptionAsync(text, result.Language, result.LanguageProbability, "phone");
                 Post(new { type = "status_update", text = "Ready", variant = "success" });
@@ -254,7 +268,7 @@ public sealed class UIBridge : IDisposable
     {
         try
         {
-            var result = await _whisper.TranscribeAsync(path, GetSelectedLanguage());
+            var result = await _whisper.TranscribeAsync(path, GetSelectedLanguage(), beamSize: _beamSize, temperature: _temperature, vadFilter: _vadFilter, noSpeechThreshold: _noSpeechThreshold, logProbThreshold: _logProbThreshold, extraSettings: BuildExtraSettings());
             await PublishTranscriptionAsync(result.Text.Trim(), result.Language, result.LanguageProbability, "mic", inject: _autoPasteEnabled, isPartial: false);
             Post(new { type = "status_update", text = "Ready", variant = "success" });
         }
@@ -333,7 +347,7 @@ public sealed class UIBridge : IDisposable
             }
 
             ReportProgress("transcribing", "Transcribing\u2026", 60);
-            var result = await _whisper.TranscribeAsync(audioForWhisper, GetSelectedLanguage(), fileMode: true);
+            var result = await _whisper.TranscribeAsync(audioForWhisper, GetSelectedLanguage(), fileMode: true, beamSize: _beamSize, temperature: _temperature, vadFilter: _vadFilter, noSpeechThreshold: _noSpeechThreshold, logProbThreshold: _logProbThreshold, extraSettings: BuildExtraSettings());
             ct.ThrowIfCancellationRequested();
             ReportProgress("transcribing", "Transcription complete", 95);
 
@@ -423,7 +437,7 @@ public sealed class UIBridge : IDisposable
                     if (_modelLoaded)
                     {
                         var (dd, dgn, cn, cc, ct, tr) = GetHardwareInfo();
-                        Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, loaded = true, model = GetCompositeName(), device = _loadedDevice, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId, detectedDevice = dd, detectedGpuName = dgn, cpuName = cn, cpuCores = cc, cpuThreads = ct, totalRam = tr });
+                        Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, loaded = true, model = GetCompositeName(), device = _loadedDevice, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId, detectedDevice = dd, detectedGpuName = dgn, cpuName = cn, cpuCores = cc, cpuThreads = ct, totalRam = tr, voice_profile = SettingsStore.SerializeProfile(SettingsStore.VoiceProfile), music_profile = SettingsStore.SerializeProfile(SettingsStore.MusicProfile) });
                         Post(new { type = "model_loaded", model = GetCompositeName(), device = _loadedDevice, note = ModelNotes.GetModelNote(_loadedModel, _loadedDevice) });
                     }
                     else if (!_healthCheckRunning)
@@ -522,6 +536,7 @@ public sealed class UIBridge : IDisposable
                 case "set_setting":
                 {
                     string settingKey = GetStringProp(root, "key");
+                    string tuneProfile = GetStringProp(root, "profile", "");
                     if (settingKey == "start_on_boot")
                     {
                         if (root.TryGetProperty("value", out var startupVal))
@@ -603,6 +618,172 @@ public sealed class UIBridge : IDisposable
                         }
                         Post(new { type = "log", message = $"Auto-paste set to {_autoPasteEnabled}" });
                     }
+                    else if (settingKey == "beam_size")
+                    {
+                        if (root.TryGetProperty("value", out var beamVal))
+                        {
+                            _beamSize = Math.Clamp(beamVal.GetInt32(), 1, 10);
+                            SettingsStore.BeamSize = _beamSize;
+                            SettingsStore.Save();
+                            Post(new { type = "settings", settings = new { beam_size = _beamSize } });
+                            Post(new { type = "log", message = $"Beam size set to {_beamSize}" });
+                        }
+                    }
+                    else if (settingKey == "temperature")
+                    {
+                        if (root.TryGetProperty("value", out var tempVal))
+                        {
+                            _temperature = Math.Clamp(tempVal.GetDouble(), 0, 1);
+                            SettingsStore.Temperature = _temperature;
+                            SettingsStore.Save();
+                            Post(new { type = "settings", settings = new { temperature = _temperature } });
+                            Post(new { type = "log", message = $"Temperature set to {_temperature}" });
+                        }
+                    }
+                    else if (settingKey == "vad_filter")
+                    {
+                        if (root.TryGetProperty("value", out var vadVal))
+                        {
+                            _vadFilter = vadVal.GetBoolean();
+                            SettingsStore.VadFilter = _vadFilter;
+                            SettingsStore.Save();
+                            Post(new { type = "settings", settings = new { vad_filter = _vadFilter } });
+                            Post(new { type = "log", message = $"VAD filter {( _vadFilter ? "enabled" : "disabled" )}" });
+                        }
+                    }
+                    else if (settingKey == "no_speech_threshold")
+                    {
+                        if (root.TryGetProperty("value", out var nstVal))
+                        {
+                            _noSpeechThreshold = Math.Clamp(nstVal.GetDouble(), 0, 1);
+                            SettingsStore.NoSpeechThreshold = _noSpeechThreshold;
+                            SettingsStore.Save();
+                            Post(new { type = "settings", settings = new { no_speech_threshold = _noSpeechThreshold } });
+                            Post(new { type = "log", message = $"No-speech threshold set to {_noSpeechThreshold:F2}" });
+                        }
+                    }
+                    else if (settingKey == "log_prob_threshold")
+                    {
+                        if (root.TryGetProperty("value", out var lptVal))
+                        {
+                            _logProbThreshold = Math.Clamp(lptVal.GetDouble(), -10, 0);
+                            SettingsStore.LogProbThreshold = _logProbThreshold;
+                            SettingsStore.Save();
+                            Post(new { type = "settings", settings = new { log_prob_threshold = _logProbThreshold } });
+                            Post(new { type = "log", message = $"Log-prob threshold set to {_logProbThreshold:F2}" });
+                        }
+                    }
+                    else if (settingKey == "best_of")
+                    {
+                        if (root.TryGetProperty("value", out var boVal))
+                        {
+                            _bestOf = Math.Clamp(boVal.GetInt32(), 1, 10);
+                            SettingsStore.BestOf = _bestOf;
+                            SettingsStore.Save();
+                            Post(new { type = "settings", settings = new { best_of = _bestOf } });
+                            Post(new { type = "log", message = $"Best-of set to {_bestOf}" });
+                        }
+                    }
+                    else if (settingKey == "repetition_penalty")
+                    {
+                        if (root.TryGetProperty("value", out var rpVal))
+                        {
+                            _repetitionPenalty = Math.Clamp(rpVal.GetDouble(), 1, 5);
+                            SettingsStore.RepetitionPenalty = _repetitionPenalty;
+                            SettingsStore.Save();
+                            Post(new { type = "settings", settings = new { repetition_penalty = _repetitionPenalty } });
+                            Post(new { type = "log", message = $"Repetition penalty set to {_repetitionPenalty:F2}" });
+                        }
+                    }
+                    else if (settingKey == "no_repeat_ngram_size")
+                    {
+                        if (root.TryGetProperty("value", out var nrVal))
+                        {
+                            _noRepeatNgramSize = Math.Max(0, nrVal.GetInt32());
+                            SettingsStore.NoRepeatNgramSize = _noRepeatNgramSize;
+                            SettingsStore.Save();
+                            Post(new { type = "settings", settings = new { no_repeat_ngram_size = _noRepeatNgramSize } });
+                            Post(new { type = "log", message = $"No-repeat n-gram size set to {_noRepeatNgramSize}" });
+                        }
+                    }
+                    else if (settingKey == "length_penalty")
+                    {
+                        if (root.TryGetProperty("value", out var lpVal))
+                        {
+                            _lengthPenalty = Math.Max(0, lpVal.GetDouble());
+                            SettingsStore.LengthPenalty = _lengthPenalty;
+                            SettingsStore.Save();
+                            Post(new { type = "settings", settings = new { length_penalty = _lengthPenalty } });
+                            Post(new { type = "log", message = $"Length penalty set to {_lengthPenalty:F2}" });
+                        }
+                    }
+                    else if (settingKey == "compression_ratio_threshold")
+                    {
+                        if (root.TryGetProperty("value", out var crVal))
+                        {
+                            _compressionRatioThreshold = Math.Max(0, crVal.GetDouble());
+                            SettingsStore.CompressionRatioThreshold = _compressionRatioThreshold;
+                            SettingsStore.Save();
+                            Post(new { type = "settings", settings = new { compression_ratio_threshold = _compressionRatioThreshold } });
+                            Post(new { type = "log", message = $"Compression ratio threshold set to {_compressionRatioThreshold:F2}" });
+                        }
+                    }
+                    else if (settingKey == "prompt_reset_on_temperature")
+                    {
+                        if (root.TryGetProperty("value", out var prVal))
+                        {
+                            _promptResetOnTemperature = Math.Clamp(prVal.GetDouble(), 0, 1);
+                            SettingsStore.PromptResetOnTemperature = _promptResetOnTemperature;
+                            SettingsStore.Save();
+                            Post(new { type = "settings", settings = new { prompt_reset_on_temperature = _promptResetOnTemperature } });
+                            Post(new { type = "log", message = $"Prompt reset on temperature set to {_promptResetOnTemperature:F2}" });
+                        }
+                    }
+                    else if (settingKey == "condition_on_previous_text")
+                    {
+                        if (root.TryGetProperty("value", out var cpVal))
+                        {
+                            _conditionOnPreviousText = cpVal.GetBoolean();
+                            SettingsStore.ConditionOnPreviousText = _conditionOnPreviousText;
+                            SettingsStore.Save();
+                            Post(new { type = "settings", settings = new { condition_on_previous_text = _conditionOnPreviousText } });
+                            Post(new { type = "log", message = $"Condition on previous text: {_conditionOnPreviousText}" });
+                        }
+                    }
+                    else if (settingKey == "hotwords")
+                    {
+                        if (root.TryGetProperty("value", out var hwVal))
+                        {
+                            if (hwVal.ValueKind == JsonValueKind.Null)
+                            {
+                                _hotwords = null;
+                                SettingsStore.Hotwords = null;
+                                SettingsStore.Save();
+                                Post(new { type = "settings", settings = new { hotwords = (string?)null } });
+                                Post(new { type = "log", message = "Hotwords cleared" });
+                            }
+                            else if (hwVal.ValueKind == JsonValueKind.String)
+                            {
+                                string? val = hwVal.GetString();
+                                _hotwords = string.IsNullOrWhiteSpace(val) ? null : val;
+                                SettingsStore.Hotwords = _hotwords;
+                                SettingsStore.Save();
+                                Post(new { type = "settings", settings = new { hotwords = _hotwords } });
+                                Post(new { type = "log", message = _hotwords is null ? "Hotwords cleared" : $"Hotwords set to: {_hotwords}" });
+                            }
+                        }
+                    }
+                    else if (settingKey == "hallucination_silence_threshold")
+                    {
+                        if (root.TryGetProperty("value", out var hsVal))
+                        {
+                            _hallucinationSilenceThreshold = Math.Max(0, hsVal.GetDouble());
+                            SettingsStore.HallucinationSilenceThreshold = _hallucinationSilenceThreshold;
+                            SettingsStore.Save();
+                            Post(new { type = "settings", settings = new { hallucination_silence_threshold = _hallucinationSilenceThreshold } });
+                            Post(new { type = "log", message = $"Hallucination silence threshold set to {_hallucinationSilenceThreshold}" });
+                        }
+                    }
                     else if (settingKey == "model_dir")
                     {
                         string dir = GetStringProp(root, "value");
@@ -619,6 +800,81 @@ public sealed class UIBridge : IDisposable
                             Post(new { type = "log", message = "Model directory reset to default" });
                         }
                         SettingsStore.Save();
+                    }
+
+                    // Sync flat values to the named profile (dual-profile persistence)
+                    if (tuneProfile == "voice" || tuneProfile == "music")
+                    {
+                        var profile = tuneProfile == "voice" ? SettingsStore.VoiceProfile : SettingsStore.MusicProfile;
+                        profile.BeamSize = _beamSize;
+                        profile.Temperature = _temperature;
+                        profile.VadFilter = _vadFilter;
+                        profile.NoSpeechThreshold = _noSpeechThreshold;
+                        profile.LogProbThreshold = _logProbThreshold;
+                        profile.BestOf = _bestOf;
+                        profile.RepetitionPenalty = _repetitionPenalty;
+                        profile.NoRepeatNgramSize = _noRepeatNgramSize;
+                        profile.LengthPenalty = _lengthPenalty;
+                        profile.CompressionRatioThreshold = _compressionRatioThreshold;
+                        profile.PromptResetOnTemperature = _promptResetOnTemperature;
+                        profile.ConditionOnPreviousText = _conditionOnPreviousText;
+                        profile.Hotwords = _hotwords;
+                        profile.HallucinationSilenceThreshold = _hallucinationSilenceThreshold;
+                        SettingsStore.Save();
+                    }
+                    break;
+                }
+
+                case "switch_profile":
+                {
+                    string profileName = GetStringProp(root, "profile");
+                    if (profileName != "voice" && profileName != "music") break;
+                    var profile = profileName == "voice" ? SettingsStore.VoiceProfile : SettingsStore.MusicProfile;
+                    _beamSize = profile.BeamSize;
+                    _temperature = profile.Temperature;
+                    _vadFilter = profile.VadFilter;
+                    _noSpeechThreshold = profile.NoSpeechThreshold;
+                    _logProbThreshold = profile.LogProbThreshold;
+                    _bestOf = profile.BestOf;
+                    _repetitionPenalty = profile.RepetitionPenalty;
+                    _noRepeatNgramSize = profile.NoRepeatNgramSize;
+                    _lengthPenalty = profile.LengthPenalty;
+                    _compressionRatioThreshold = profile.CompressionRatioThreshold;
+                    _promptResetOnTemperature = profile.PromptResetOnTemperature;
+                    _conditionOnPreviousText = profile.ConditionOnPreviousText;
+                    _hotwords = profile.Hotwords;
+                    _hallucinationSilenceThreshold = profile.HallucinationSilenceThreshold;
+                    SettingsStore.Save();
+                    Post(new { type = "log", message = $"Switched to {profileName} profile" });
+                    break;
+                }
+
+                case "save_profile":
+                {
+                    string profileName = GetStringProp(root, "profile");
+                    if (profileName != "voice" && profileName != "music") break;
+                    var profile = profileName == "voice" ? SettingsStore.VoiceProfile : SettingsStore.MusicProfile;
+                    if (root.TryGetProperty("values", out var vals) && vals.ValueKind == JsonValueKind.Object)
+                    {
+                        if (vals.TryGetProperty("beam_size", out var bs)) profile.BeamSize = bs.GetInt32();
+                        if (vals.TryGetProperty("temperature", out var tp)) profile.Temperature = tp.GetDouble();
+                        if (vals.TryGetProperty("vad_filter", out var vf)) profile.VadFilter = vf.GetBoolean();
+                        if (vals.TryGetProperty("no_speech_threshold", out var nst)) profile.NoSpeechThreshold = nst.GetDouble();
+                        if (vals.TryGetProperty("log_prob_threshold", out var lpt)) profile.LogProbThreshold = lpt.GetDouble();
+                        if (vals.TryGetProperty("best_of", out var bo)) profile.BestOf = Math.Clamp(bo.GetInt32(), 1, 10);
+                        if (vals.TryGetProperty("repetition_penalty", out var rp)) profile.RepetitionPenalty = Math.Clamp(rp.GetDouble(), 1, 5);
+                        if (vals.TryGetProperty("no_repeat_ngram_size", out var nr)) profile.NoRepeatNgramSize = Math.Max(0, nr.GetInt32());
+                        if (vals.TryGetProperty("length_penalty", out var lp)) profile.LengthPenalty = Math.Max(0, lp.GetDouble());
+                        if (vals.TryGetProperty("compression_ratio_threshold", out var cr)) profile.CompressionRatioThreshold = Math.Max(0, cr.GetDouble());
+                        if (vals.TryGetProperty("prompt_reset_on_temperature", out var pr)) profile.PromptResetOnTemperature = Math.Clamp(pr.GetDouble(), 0, 1);
+                        if (vals.TryGetProperty("condition_on_previous_text", out var cp)) profile.ConditionOnPreviousText = cp.GetBoolean();
+                        if (vals.TryGetProperty("hotwords", out var hw) && hw.ValueKind == JsonValueKind.String)
+                            profile.Hotwords = hw.GetString();
+                        else if (vals.TryGetProperty("hotwords", out var hwNull) && hwNull.ValueKind == JsonValueKind.Null)
+                            profile.Hotwords = null;
+                        if (vals.TryGetProperty("hallucination_silence_threshold", out var hs)) profile.HallucinationSilenceThreshold = Math.Max(0, hs.GetDouble());
+                        SettingsStore.Save();
+                        Post(new { type = "log", message = $"{profileName} profile saved" });
                     }
                     break;
                 }
@@ -806,6 +1062,21 @@ public sealed class UIBridge : IDisposable
         return fallback;
     }
 
+    private Dictionary<string, object?> BuildExtraSettings()
+    {
+        var d = new Dictionary<string, object?>();
+        if (_bestOf != 5) d["best_of"] = _bestOf;
+        if (_repetitionPenalty != 1.0) d["repetition_penalty"] = _repetitionPenalty;
+        if (_noRepeatNgramSize != 0) d["no_repeat_ngram_size"] = _noRepeatNgramSize;
+        if (_lengthPenalty != 1.0) d["length_penalty"] = _lengthPenalty;
+        if (_compressionRatioThreshold != 2.4) d["compression_ratio_threshold"] = _compressionRatioThreshold;
+        if (_promptResetOnTemperature != 0.5) d["prompt_reset_on_temperature"] = _promptResetOnTemperature;
+        d["condition_on_previous_text"] = _conditionOnPreviousText;
+        if (_hotwords is not null) d["hotwords"] = _hotwords;
+        if (_hallucinationSilenceThreshold > 0) d["hallucination_silence_threshold"] = _hallucinationSilenceThreshold;
+        return d;
+    }
+
     private static int KeyNameToVkCode(string keyName)
     {
         return keyName switch
@@ -847,6 +1118,20 @@ public sealed class UIBridge : IDisposable
                 RuntimePaths.ModelsRoot = SettingsStore.ModelDirectory;
             _selectedLanguage = SettingsStore.Language;
             _autoPasteEnabled = SettingsStore.AutoPasteEnabled;
+            _beamSize = SettingsStore.BeamSize;
+            _temperature = SettingsStore.Temperature;
+            _vadFilter = SettingsStore.VadFilter;
+            _noSpeechThreshold = SettingsStore.NoSpeechThreshold;
+            _logProbThreshold = SettingsStore.LogProbThreshold;
+            _bestOf = SettingsStore.BestOf;
+            _repetitionPenalty = SettingsStore.RepetitionPenalty;
+            _noRepeatNgramSize = SettingsStore.NoRepeatNgramSize;
+            _lengthPenalty = SettingsStore.LengthPenalty;
+            _compressionRatioThreshold = SettingsStore.CompressionRatioThreshold;
+            _promptResetOnTemperature = SettingsStore.PromptResetOnTemperature;
+            _conditionOnPreviousText = SettingsStore.ConditionOnPreviousText;
+            _hotwords = SettingsStore.Hotwords;
+            _hallucinationSilenceThreshold = SettingsStore.HallucinationSilenceThreshold;
             _sfx.Enabled = SettingsStore.SoundEffectsEnabled;
             _audio.DeviceId = SettingsStore.AudioDeviceId;
             if (SettingsStore.StartOnBoot) _startup.SetEnabled(true);
@@ -860,7 +1145,7 @@ public sealed class UIBridge : IDisposable
                 if (!ready)
                 {
                     var (hdd3, hdgn3, hcn3, hcc3, hct3, htr3) = GetHardwareInfo();
-                    Post(new { type = "init", darkMode = _detectDarkMode(), ready = false, error = "Setup failed. Check the logs and try again.", detectedDevice = hdd3, detectedGpuName = hdgn3, cpuName = hcn3, cpuCores = hcc3, cpuThreads = hct3, totalRam = htr3 });
+                    Post(new { type = "init", darkMode = _detectDarkMode(), ready = false, error = "Setup failed. Check the logs and try again.", detectedDevice = hdd3, detectedGpuName = hdgn3, cpuName = hcn3, cpuCores = hcc3, cpuThreads = hct3, totalRam = htr3, voice_profile = SettingsStore.SerializeProfile(SettingsStore.VoiceProfile), music_profile = SettingsStore.SerializeProfile(SettingsStore.MusicProfile) });
                     return;
                 }
             }
@@ -869,7 +1154,7 @@ public sealed class UIBridge : IDisposable
             // Detect GPU first so the init message carries the real device (not _loadedDevice, which stays "cpu" until a model loads)
             var recommended = SttRuntimeOptions.RecommendedForThisPc;
             var (hdd4, hdgn4, hcn4, hcc4, hct4, htr4) = GetHardwareInfo();
-            Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, loaded = false, model = GetCompositeName(), device = recommended.Provider, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId, detectedDevice = hdd4, detectedGpuName = hdgn4, cpuName = hcn4, cpuCores = hcc4, cpuThreads = hct4, totalRam = htr4 });
+            Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, loaded = false, model = GetCompositeName(), device = recommended.Provider, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId, detectedDevice = hdd4, detectedGpuName = hdgn4, cpuName = hcn4, cpuCores = hcc4, cpuThreads = hct4, totalRam = htr4, voice_profile = SettingsStore.SerializeProfile(SettingsStore.VoiceProfile), music_profile = SettingsStore.SerializeProfile(SettingsStore.MusicProfile) });
             Post(new { type = "settings", settings = new {
                 startup = _startup.IsEnabled(),
                 language = _selectedLanguage,
@@ -877,6 +1162,20 @@ public sealed class UIBridge : IDisposable
                 auto_paste = _autoPasteEnabled,
                 theme = SettingsStore.Theme,
                 audio_device = _audio.DeviceId,
+                beam_size = _beamSize,
+                temperature = _temperature,
+                vad_filter = _vadFilter,
+                no_speech_threshold = _noSpeechThreshold,
+                log_prob_threshold = _logProbThreshold,
+                best_of = _bestOf,
+                repetition_penalty = _repetitionPenalty,
+                no_repeat_ngram_size = _noRepeatNgramSize,
+                length_penalty = _lengthPenalty,
+                compression_ratio_threshold = _compressionRatioThreshold,
+                prompt_reset_on_temperature = _promptResetOnTemperature,
+                condition_on_previous_text = _conditionOnPreviousText,
+                hotwords = _hotwords,
+                hallucination_silence_threshold = _hallucinationSilenceThreshold,
             } });
 
             Post(new { type = "log", message = $"Detected GPU: {recommended.Provider}. Recommended model: {recommended.Model}" });
@@ -889,7 +1188,7 @@ public sealed class UIBridge : IDisposable
             SetModelError(ex.Message);
             Post(new { type = "log", message = $"Setup failed: {ex.Message}" });
             var (hdd5, hdgn5, hcn5, hcc5, hct5, htr5) = GetHardwareInfo();
-            Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, error = ex.Message, loaded = false, model = GetCompositeName(), device = SttRuntimeOptions.RecommendedForThisPc.Provider, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId, detectedDevice = hdd5, detectedGpuName = hdgn5, cpuName = hcn5, cpuCores = hcc5, cpuThreads = hct5, totalRam = htr5 });
+            Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, error = ex.Message, loaded = false, model = GetCompositeName(), device = SttRuntimeOptions.RecommendedForThisPc.Provider, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId, detectedDevice = hdd5, detectedGpuName = hdgn5, cpuName = hcn5, cpuCores = hcc5, cpuThreads = hct5, totalRam = htr5, voice_profile = SettingsStore.SerializeProfile(SettingsStore.VoiceProfile), music_profile = SettingsStore.SerializeProfile(SettingsStore.MusicProfile) });
             Post(new { type = "status_update", text = "Setup failed", variant = "error" });
             Post(new { type = "notification", title = "Startup failed", message = ex.Message, variant = "error" });
         }
@@ -906,36 +1205,36 @@ public sealed class UIBridge : IDisposable
         try
         {
             // Pick the best model that's actually on disk
-            string provider = recommended.Provider;
-            string? bestModel = FindBestAvailableModel(provider, recommended.Model);
+            string preferredProvider = recommended.Provider;
+            var (bestModel, actualProvider) = FindBestAvailableModel(preferredProvider, recommended.Model);
 
-            if (bestModel is null)
+            if (bestModel is null || actualProvider is null)
             {
-                Post(new { type = "log", message = $"No {provider} models downloaded. Go to Models page to download one." });
+                Post(new { type = "log", message = $"No models downloaded. Go to Models page to download one." });
                 Post(new { type = "status_update", text = "No model downloaded", variant = "warning" });
                 SendModelsStatus();
                 return;
             }
 
-            var loadOpts = bestModel == recommended.Model
+            var loadOpts = bestModel == recommended.Model && actualProvider == preferredProvider
                 ? recommended with { Language = _selectedLanguage }
-                : BuildRuntimeOptions($"{bestModel}-{provider}", _selectedLanguage);
+                : BuildRuntimeOptions($"{bestModel}-{actualProvider}", _selectedLanguage);
 
-            Post(new { type = "log", message = $"Loading model {bestModel} on {provider}\u2026" });
+            Post(new { type = "log", message = $"Loading model {bestModel} on {actualProvider}\u2026" });
             Post(new { type = "status_update", text = "Loading model\u2026", variant = "warning" });
 
             await _whisper.StartAsync(loadOpts);
             string actualDevice = _whisper.GetReportedDevice();
-            if (actualDevice != provider)
+            if (actualDevice != actualProvider)
             {
-                Post(new { type = "log", message = $"Model loaded on {actualDevice} instead of {provider} — run Setup to fix GPU acceleration" });
-                Post(new { type = "notification", title = "GPU acceleration unavailable", message = $"Model loaded on {actualDevice}. Run Setup to enable {provider}.", variant = "warning" });
+                Post(new { type = "log", message = $"Model loaded on {actualDevice} instead of {actualProvider} — run Setup to fix GPU acceleration" });
+                Post(new { type = "notification", title = "GPU acceleration unavailable", message = $"Model loaded on {actualDevice}. Run Setup to enable {actualProvider}.", variant = "warning" });
             }
             SetModelLoaded(bestModel, actualDevice);
 
             string loadedComposite = $"{bestModel}-{actualDevice}";
             var (hdd, hdgn, hcn, hcc, hct, htr) = GetHardwareInfo();
-            Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, loaded = true, model = loadedComposite, device = actualDevice, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId, detectedDevice = hdd, detectedGpuName = hdgn, cpuName = hcn, cpuCores = hcc, cpuThreads = hct, totalRam = htr });
+            Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, loaded = true, model = loadedComposite, device = actualDevice, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId, detectedDevice = hdd, detectedGpuName = hdgn, cpuName = hcn, cpuCores = hcc, cpuThreads = hct, totalRam = htr, voice_profile = SettingsStore.SerializeProfile(SettingsStore.VoiceProfile), music_profile = SettingsStore.SerializeProfile(SettingsStore.MusicProfile) });
             Post(new { type = "settings", settings = new {
                 startup = _startup.IsEnabled(),
                 language = _selectedLanguage,
@@ -943,6 +1242,20 @@ public sealed class UIBridge : IDisposable
                 auto_paste = _autoPasteEnabled,
                 theme = SettingsStore.Theme,
                 audio_device = _audio.DeviceId,
+                beam_size = _beamSize,
+                temperature = _temperature,
+                vad_filter = _vadFilter,
+                no_speech_threshold = _noSpeechThreshold,
+                log_prob_threshold = _logProbThreshold,
+                best_of = _bestOf,
+                repetition_penalty = _repetitionPenalty,
+                no_repeat_ngram_size = _noRepeatNgramSize,
+                length_penalty = _lengthPenalty,
+                compression_ratio_threshold = _compressionRatioThreshold,
+                prompt_reset_on_temperature = _promptResetOnTemperature,
+                condition_on_previous_text = _conditionOnPreviousText,
+                hotwords = _hotwords,
+                hallucination_silence_threshold = _hallucinationSilenceThreshold,
             } });
             Post(new { type = "clear_history" });
             foreach (var entry in _history.Entries)
@@ -958,7 +1271,7 @@ public sealed class UIBridge : IDisposable
             SetModelError(ex.Message);
             Post(new { type = "log", message = $"Model load failed: {ex.Message}" });
             var (hdd2, hdgn2, hcn2, hcc2, hct2, htr2) = GetHardwareInfo();
-            Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, loaded = false, error = $"Model load failed: {ex.Message}", model = GetCompositeName(), device = _loadedDevice, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId, detectedDevice = hdd2, detectedGpuName = hdgn2, cpuName = hcn2, cpuCores = hcc2, cpuThreads = hct2, totalRam = htr2 });
+            Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, loaded = false, error = $"Model load failed: {ex.Message}", model = GetCompositeName(), device = _loadedDevice, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId, detectedDevice = hdd2, detectedGpuName = hdgn2, cpuName = hcn2, cpuCores = hcc2, cpuThreads = hct2, totalRam = htr2, voice_profile = SettingsStore.SerializeProfile(SettingsStore.VoiceProfile), music_profile = SettingsStore.SerializeProfile(SettingsStore.MusicProfile) });
             Post(new { type = "settings", settings = new {
                 startup = _startup.IsEnabled(),
                 language = _selectedLanguage,
@@ -966,6 +1279,20 @@ public sealed class UIBridge : IDisposable
                 auto_paste = _autoPasteEnabled,
                 theme = SettingsStore.Theme,
                 audio_device = _audio.DeviceId,
+                beam_size = _beamSize,
+                temperature = _temperature,
+                vad_filter = _vadFilter,
+                no_speech_threshold = _noSpeechThreshold,
+                log_prob_threshold = _logProbThreshold,
+                best_of = _bestOf,
+                repetition_penalty = _repetitionPenalty,
+                no_repeat_ngram_size = _noRepeatNgramSize,
+                length_penalty = _lengthPenalty,
+                compression_ratio_threshold = _compressionRatioThreshold,
+                prompt_reset_on_temperature = _promptResetOnTemperature,
+                condition_on_previous_text = _conditionOnPreviousText,
+                hotwords = _hotwords,
+                hallucination_silence_threshold = _hallucinationSilenceThreshold,
             } });
             Post(new { type = "status_update", text = $"Model load failed: {ex.Message}", variant = "error" });
             Post(new { type = "notification", title = "Model load failed", message = ex.Message, variant = "error" });
@@ -973,18 +1300,36 @@ public sealed class UIBridge : IDisposable
         }
     }
 
-    private string? FindBestAvailableModel(string provider, string preferred)
+    private (string? model, string? provider) FindBestAvailableModel(string preferredProvider, string preferredModel)
     {
-        if (_whisper.IsModelDownloaded(provider, preferred))
-            return preferred;
+        // Try the preferred provider first
+        if (_whisper.IsModelDownloaded(preferredProvider, preferredModel))
+            return (preferredModel, preferredProvider);
 
         foreach (var name in ModelsBySize)
         {
-            if (_whisper.IsModelDownloaded(provider, name))
-                return name;
+            if (_whisper.IsModelDownloaded(preferredProvider, name))
+                return (name, preferredProvider);
         }
 
-        return null;
+        // No model found for the preferred provider (e.g. DML/CUDA).
+        // Fall back to CPU — always available, always has models.
+        if (preferredProvider != "cpu")
+        {
+            // If the preferred model exists on CPU, use it
+            string actualProvider = "cpu";
+
+            if (_whisper.IsModelDownloaded(actualProvider, preferredModel))
+                return (preferredModel, actualProvider);
+
+            foreach (var name in ModelsBySize)
+            {
+                if (_whisper.IsModelDownloaded(actualProvider, name))
+                    return (name, actualProvider);
+            }
+        }
+
+        return (null, null);
     }
 
     private async Task RunAutoSetupAsync()
@@ -1013,11 +1358,11 @@ public sealed class UIBridge : IDisposable
         var (hdd6, hdgn6, hcn6, hcc6, hct6, htr6) = GetHardwareInfo();
         if (ready)
         {
-            Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, loaded = false, model = GetCompositeName(), device = _gpuDetect.Detect().provider, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId, detectedDevice = hdd6, detectedGpuName = hdgn6, cpuName = hcn6, cpuCores = hcc6, cpuThreads = hct6, totalRam = htr6 });
+            Post(new { type = "init", darkMode = _detectDarkMode(), ready = true, loaded = false, model = GetCompositeName(), device = _gpuDetect.Detect().provider, gpuName = _gpuDetect.GetGpuName(), audioDevices = AudioCaptureService.GetInputDeviceNames(), audioDeviceIndex = _audio.DeviceId, detectedDevice = hdd6, detectedGpuName = hdgn6, cpuName = hcn6, cpuCores = hcc6, cpuThreads = hct6, totalRam = htr6, voice_profile = SettingsStore.SerializeProfile(SettingsStore.VoiceProfile), music_profile = SettingsStore.SerializeProfile(SettingsStore.MusicProfile) });
         }
         else
         {
-            Post(new { type = "init", darkMode = _detectDarkMode(), ready = false, error = "Setup still failed. Check the logs and try again.", detectedDevice = hdd6, detectedGpuName = hdgn6, cpuName = hcn6, cpuCores = hcc6, cpuThreads = hct6, totalRam = htr6 });
+            Post(new { type = "init", darkMode = _detectDarkMode(), ready = false, error = "Setup still failed. Check the logs and try again.", detectedDevice = hdd6, detectedGpuName = hdgn6, cpuName = hcn6, cpuCores = hcc6, cpuThreads = hct6, totalRam = htr6, voice_profile = SettingsStore.SerializeProfile(SettingsStore.VoiceProfile), music_profile = SettingsStore.SerializeProfile(SettingsStore.MusicProfile) });
         }
     }
 

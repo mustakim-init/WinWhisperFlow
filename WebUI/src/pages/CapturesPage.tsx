@@ -103,7 +103,7 @@ export function CapturesPage() {
                   const isActive = activeIndex === idx;
                   return (
                     <button
-                      key={entry.timestamp + entry.text.substring(0, 15) + idx}
+                      key={entry.ts}
                       onClick={() => setSelectedIndex(idx)}
                       className={cn(
                         'w-full text-left p-3.5 rounded-lg transition-colors block border border-transparent',

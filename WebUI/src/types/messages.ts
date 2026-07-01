@@ -15,6 +15,8 @@ export interface InitMessage {
   cpuCores?: number;
   cpuThreads?: number;
   totalRam?: number;
+  voice_profile?: Record<string, unknown>;
+  music_profile?: Record<string, unknown>;
 }
 
 export interface SetupProgress {
@@ -103,7 +105,9 @@ export type C2SMessage =
   | { type: 'toggle_listening' }
   | { type: 'load_model'; model: string }
   | { type: 'phone_mic_toggle' }
-  | { type: 'set_setting'; key: string; value: unknown }
+  | { type: 'set_setting'; key: string; value: unknown; profile?: string }
+  | { type: 'save_profile'; profile: string; values: Record<string, unknown> }
+  | { type: 'switch_profile'; profile: string }
   | { type: 'set_language'; language: string }
   | { type: 'copy_text'; text: string }
   | { type: 'download_model'; model: string }

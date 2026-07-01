@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Mic, Smartphone, Box, Settings, Captions } from 'lucide-react';
+import { APP_VERSION } from '../lib/version';
 
 export type PageId = 'dictate' | 'captures' | 'phone-mic' | 'models' | 'settings';
 
@@ -90,7 +91,7 @@ export function Sidebar({ active, onChange, ready, statusText, statusVariant }: 
       >
         <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground/50">
           <span className={`w-1.5 h-1.5 rounded-full ${dotColor}`} />
-          v1.0
+          v{APP_VERSION}
         </span>
 
         {/* Status tooltip */}

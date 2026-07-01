@@ -27,7 +27,7 @@ export function SettingRow({
   action,
   children,
 }: {
-  title: string;
+  title: ReactNode;
   description?: string;
   htmlFor?: string;
   action?: ReactNode;
@@ -37,12 +37,13 @@ export function SettingRow({
     <div className="py-3">
       <div className="flex items-center justify-between gap-8">
         <div className="min-w-0">
-          <label
-            htmlFor={htmlFor}
-            className={`text-sm font-medium leading-none select-none ${htmlFor ? 'cursor-pointer' : ''}`}
-          >
-            {title}
-          </label>
+          {htmlFor ? (
+            <label htmlFor={htmlFor} className="text-sm font-medium leading-none select-none cursor-pointer">
+              {title}
+            </label>
+          ) : (
+            <div className="text-sm font-medium leading-none">{title}</div>
+          )}
           {description && <p className="text-sm text-muted-foreground mt-0.5">{description}</p>}
         </div>
         {action && <div className="shrink-0">{action}</div>}

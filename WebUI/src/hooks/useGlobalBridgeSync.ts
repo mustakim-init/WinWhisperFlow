@@ -7,34 +7,44 @@ import {
   setPhoneMicRunning, setPhoneMicUrl, setSetupSteps, setSetupOverall, setSetupError,
   setLanguage, setModelLoading, setAvailableModels,
   setFileTranscribing, setFileName, setFileProgress, setFileStage, setFileElapsed, resetFileState,
-  getState,
+  getState, set,
   setVoiceTranscript, setVoicePartialTranscript, setFileTranscript, setMusicTranscript,
   setDetectedDevice, setDetectedGpuName, setCpuName, setCpuCores, setCpuThreads, setTotalRam,
   setUpdateAvailable, setUpdateDownloading, setUpdateProgress, setUpdateReady, setUpdateError,
+  setFlatOnly, snakeToCamelProfile, DEFAULT_VOICE, DEFAULT_MUSIC, reconcileProfile,
 } from '../lib/store';
 import { useUiStore } from '../stores/uiStore';
 import { useDownloadStore } from '../stores/downloadStore';
 import { useToastStore } from '../stores/toastStore';
 
+let reconciled = false;
+
 export function useGlobalBridgeSync() {
   useEffect(() => {
     // Retry bridge_ready until init is received (handles race where
     // C# WebMessageReceived handler may not be registered yet)
-    let retries = 0
-    const maxRetries = 20
-    const interval = setInterval(() => {
-      send({ type: 'bridge_ready' })
-      retries++
-      if (retries >= maxRetries) clearInterval(interval)
-    }, 250)
-    send({ type: 'bridge_ready' })
+    let retries = 0;
+    const maxRetries = 20;
+    let interval: ReturnType<typeof setInterval> | null = null;
+    interval = setInterval(() => {
+      send({ type: 'bridge_ready' });
+      retries++;
+      if (retries >= maxRetries && interval) {
+        clearInterval(interval);
+        interval = null;
+      }
+    }, 250);
+    send({ type: 'bridge_ready' });
 
     const unsubMsg = onMessage((msg: S2CMessage) => {
       // Stop bridge_ready retries as soon as we receive ANY message from C#.
       // The first message proves the WebView2 bridge is registered. Continued
       // retries would trigger duplicate RunHealthCheckAsync calls, each
       // cancelling the previous one and causing spurious "Setup failed" errors.
-      clearInterval(interval)
+      if (interval) {
+        clearInterval(interval);
+        interval = null;
+      }
 
       switch (msg.type) {
         case 'init':
@@ -62,11 +72,43 @@ export function useGlobalBridgeSync() {
           } else if (!msg.ready && msg.error) {
             setSetupError(msg.error);
           }
+          // Override profiles with backend data (source of truth — prevents stale
+          // flat values from a previously-active profile corrupting defaults on restart)
+          if (msg.voice_profile) {
+            set({ voiceDefaults: { ...DEFAULT_VOICE, ...snakeToCamelProfile(msg.voice_profile) } });
+          }
+          if (msg.music_profile) {
+            set({ musicDefaults: { ...DEFAULT_MUSIC, ...snakeToCamelProfile(msg.music_profile) } });
+          }
+          if (!reconciled) {
+            reconciled = true;
+            reconcileProfile();
+          }
           break;
 
         case 'settings': {
           const s = msg.settings;
           if (typeof s.language === 'string') setLanguage(s.language);
+          // Use setFlatOnly to avoid profile corruption — the backend's flat values
+          // may belong to a different profile than activeProfile on restart
+          if (typeof s.beam_size === 'number') setFlatOnly('beamSize', s.beam_size);
+          if (typeof s.temperature === 'number') setFlatOnly('temperature', s.temperature);
+          if (typeof s.vad_filter === 'boolean') setFlatOnly('vadFilter', s.vad_filter);
+          if (typeof s.no_speech_threshold === 'number') setFlatOnly('noSpeechThreshold', s.no_speech_threshold);
+          if (typeof s.log_prob_threshold === 'number') setFlatOnly('logProbThreshold', s.log_prob_threshold);
+          if (typeof s.best_of === 'number') setFlatOnly('bestOf', s.best_of);
+          if (typeof s.repetition_penalty === 'number') setFlatOnly('repetitionPenalty', s.repetition_penalty);
+          if (typeof s.no_repeat_ngram_size === 'number') setFlatOnly('noRepeatNgramSize', s.no_repeat_ngram_size);
+          if (typeof s.length_penalty === 'number') setFlatOnly('lengthPenalty', s.length_penalty);
+          if (typeof s.compression_ratio_threshold === 'number') setFlatOnly('compressionRatioThreshold', s.compression_ratio_threshold);
+          if (typeof s.prompt_reset_on_temperature === 'number') setFlatOnly('promptResetOnTemperature', s.prompt_reset_on_temperature);
+          if (typeof s.condition_on_previous_text === 'boolean') setFlatOnly('conditionOnPreviousText', s.condition_on_previous_text);
+          if (typeof s.hotwords === 'string' || s.hotwords === null) setFlatOnly('hotwords', s.hotwords as string | null);
+          if (typeof s.hallucination_silence_threshold === 'number') setFlatOnly('hallucinationSilenceThreshold', s.hallucination_silence_threshold);
+          if (!reconciled) {
+            reconciled = true;
+            reconcileProfile();
+          }
           break;
         }
 
@@ -238,6 +280,11 @@ export function useGlobalBridgeSync() {
       }
     });
 
-    return () => { clearInterval(interval); unsubMsg(); };
+    return () => {
+      if (interval) {
+        clearInterval(interval);
+      }
+      unsubMsg();
+    };
   }, []);
 }

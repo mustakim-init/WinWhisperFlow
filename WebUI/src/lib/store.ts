@@ -1,6 +1,119 @@
 import type { HistoryEntry, SetupStep, ModelInfo } from '../types/messages';
+import { send } from '../bridge/ipc';
 
 type Listener = () => void;
+
+export interface SettingProfile {
+  beamSize: number; temperature: number; vadFilter: boolean;
+  noSpeechThreshold: number; logProbThreshold: number;
+  bestOf: number; repetitionPenalty: number; noRepeatNgramSize: number;
+  lengthPenalty: number; compressionRatioThreshold: number;
+  promptResetOnTemperature: number; conditionOnPreviousText: boolean;
+  hotwords: string | null; hallucinationSilenceThreshold: number;
+}
+
+const PROFILE_KEYS: (keyof SettingProfile)[] = [
+  'beamSize', 'temperature', 'vadFilter', 'noSpeechThreshold', 'logProbThreshold',
+  'bestOf', 'repetitionPenalty', 'noRepeatNgramSize', 'lengthPenalty',
+  'compressionRatioThreshold', 'promptResetOnTemperature', 'conditionOnPreviousText',
+  'hotwords', 'hallucinationSilenceThreshold',
+];
+
+const CAML_TO_SNAKE: Record<string, string> = {
+  beamSize: 'beam_size', temperature: 'temperature', vadFilter: 'vad_filter',
+  noSpeechThreshold: 'no_speech_threshold', logProbThreshold: 'log_prob_threshold',
+  bestOf: 'best_of', repetitionPenalty: 'repetition_penalty',
+  noRepeatNgramSize: 'no_repeat_ngram_size', lengthPenalty: 'length_penalty',
+  compressionRatioThreshold: 'compression_ratio_threshold',
+  promptResetOnTemperature: 'prompt_reset_on_temperature',
+  conditionOnPreviousText: 'condition_on_previous_text',
+  hotwords: 'hotwords', hallucinationSilenceThreshold: 'hallucination_silence_threshold',
+};
+
+const SNAKE_TO_CAM: Record<string, keyof SettingProfile> = {};
+for (const [cam, snake] of Object.entries(CAML_TO_SNAKE)) {
+  SNAKE_TO_CAM[snake] = cam as keyof SettingProfile;
+}
+
+// Convert a snake_case profile object (from backend IPC) to camelCase (store format)
+export function snakeToCamelProfile(src: Record<string, unknown>): Partial<SettingProfile> {
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(src)) {
+    const cam = SNAKE_TO_CAM[k];
+    if (cam) out[cam] = v;
+  }
+  return out as Partial<SettingProfile>;
+}
+
+export function reconcileProfile() {
+  const profileKey = state.activeProfile === 'voice' ? 'voiceDefaults' : 'musicDefaults';
+  const src = state[profileKey] as SettingProfile;
+  set({
+    beamSize: src.beamSize,
+    temperature: src.temperature,
+    vadFilter: src.vadFilter,
+    noSpeechThreshold: src.noSpeechThreshold,
+    logProbThreshold: src.logProbThreshold,
+    bestOf: src.bestOf,
+    repetitionPenalty: src.repetitionPenalty,
+    noRepeatNgramSize: src.noRepeatNgramSize,
+    lengthPenalty: src.lengthPenalty,
+    compressionRatioThreshold: src.compressionRatioThreshold,
+    promptResetOnTemperature: src.promptResetOnTemperature,
+    conditionOnPreviousText: src.conditionOnPreviousText,
+    hotwords: src.hotwords,
+    hallucinationSilenceThreshold: src.hallucinationSilenceThreshold,
+  });
+}
+
+export function loadProfile(name: 'voice' | 'music') {
+  const oldKey = state.activeProfile === 'voice' ? 'voiceDefaults' : 'musicDefaults';
+  const newKey = name === 'voice' ? 'voiceDefaults' : 'musicDefaults';
+  const src = state[newKey] as SettingProfile;
+
+  const patch: Partial<AppState> = { activeProfile: name, ...src };
+
+  if (oldKey !== newKey) {
+    patch[oldKey] = {
+      beamSize: state.beamSize,
+      temperature: state.temperature,
+      vadFilter: state.vadFilter,
+      noSpeechThreshold: state.noSpeechThreshold,
+      logProbThreshold: state.logProbThreshold,
+      bestOf: state.bestOf,
+      repetitionPenalty: state.repetitionPenalty,
+      noRepeatNgramSize: state.noRepeatNgramSize,
+      lengthPenalty: state.lengthPenalty,
+      compressionRatioThreshold: state.compressionRatioThreshold,
+      promptResetOnTemperature: state.promptResetOnTemperature,
+      conditionOnPreviousText: state.conditionOnPreviousText,
+      hotwords: state.hotwords,
+      hallucinationSilenceThreshold: state.hallucinationSilenceThreshold,
+    } as SettingProfile;
+  }
+
+  set(patch);
+
+  send({ type: 'switch_profile', profile: name });
+}
+
+export const DEFAULT_VOICE: SettingProfile = {
+  beamSize: 1, temperature: 0, vadFilter: false,
+  noSpeechThreshold: 0.45, logProbThreshold: -0.8,
+  bestOf: 5, repetitionPenalty: 1, noRepeatNgramSize: 0,
+  lengthPenalty: 1, compressionRatioThreshold: 2.4,
+  promptResetOnTemperature: 0.5, conditionOnPreviousText: true,
+  hotwords: null, hallucinationSilenceThreshold: 0,
+};
+
+export const DEFAULT_MUSIC: SettingProfile = {
+  beamSize: 5, temperature: 0, vadFilter: false,
+  noSpeechThreshold: 0.6, logProbThreshold: -1.0,
+  bestOf: 5, repetitionPenalty: 1.2, noRepeatNgramSize: 3,
+  lengthPenalty: 1, compressionRatioThreshold: 2.4,
+  promptResetOnTemperature: 0.5, conditionOnPreviousText: false,
+  hotwords: null, hallucinationSilenceThreshold: 2,
+};
 
 interface AppState {
   device: string;
@@ -56,6 +169,23 @@ interface AppState {
   updateProgress: number;
   updateReady: boolean;
   updateError: string | null;
+  beamSize: number;
+  temperature: number;
+  vadFilter: boolean;
+  noSpeechThreshold: number;
+  logProbThreshold: number;
+  bestOf: number;
+  repetitionPenalty: number;
+  noRepeatNgramSize: number;
+  lengthPenalty: number;
+  compressionRatioThreshold: number;
+  promptResetOnTemperature: number;
+  conditionOnPreviousText: boolean;
+  hotwords: string | null;
+  hallucinationSilenceThreshold: number;
+  activeProfile: 'voice' | 'music';
+  voiceDefaults: SettingProfile;
+  musicDefaults: SettingProfile;
 }
 
 export interface LogEntry {
@@ -120,6 +250,23 @@ let state: AppState = {
   updateProgress: 0,
   updateReady: false,
   updateError: null as string | null,
+  beamSize: 1,
+  temperature: 0,
+  vadFilter: false,
+  noSpeechThreshold: 0.45,
+  logProbThreshold: -0.8,
+  bestOf: 5,
+  repetitionPenalty: 1,
+  noRepeatNgramSize: 0,
+  lengthPenalty: 1,
+  compressionRatioThreshold: 2.4,
+  promptResetOnTemperature: 0.5,
+  conditionOnPreviousText: true,
+  hotwords: null,
+  hallucinationSilenceThreshold: 0,
+  activeProfile: 'voice',
+  voiceDefaults: { ...DEFAULT_VOICE },
+  musicDefaults: { ...DEFAULT_MUSIC },
 };
 
 const listeners = new Set<Listener>();
@@ -137,7 +284,7 @@ export function getState(): AppState {
   return state;
 }
 
-function set(patch: Partial<AppState>) {
+export function set(patch: Partial<AppState>) {
   state = { ...state, ...patch };
   notify();
 }
@@ -186,6 +333,44 @@ export function setUpdateDownloading(v: boolean) { set({ updateDownloading: v })
 export function setUpdateProgress(p: number) { set({ updateProgress: p }); }
 export function setUpdateReady(v: boolean) { set({ updateReady: v }); }
 export function setUpdateError(e: string | null) { set({ updateError: e }); }
+// Skips profile update — used during backend sync to avoid corrupting profiles
+// with stale flat values from a different profile on restart
+export function setFlatOnly(key: keyof SettingProfile, value: any) {
+  set({ [key]: value } as any);
+}
+
+function setWithProfile(key: keyof SettingProfile, value: any) {
+  const profileKey = state.activeProfile === 'voice' ? 'voiceDefaults' : 'musicDefaults';
+  set({ [key]: value, [profileKey]: { ...state[profileKey], [key]: value } } as any);
+}
+
+export function setProfileSetting(profile: 'voice' | 'music', key: keyof SettingProfile, value: any) {
+  const profileKey = profile === 'voice' ? 'voiceDefaults' : 'musicDefaults';
+  const patch: Record<string, any> = { [profileKey]: { ...state[profileKey], [key]: value } };
+  if (profile === state.activeProfile) patch[key] = value;
+  set(patch as any);
+  const snake = CAML_TO_SNAKE[key];
+  if (profile === state.activeProfile) {
+    send({ type: 'set_setting', key: snake, value, profile });
+  } else {
+    send({ type: 'save_profile', profile, values: { [snake]: value } });
+  }
+}
+
+export function setBeamSize(v: number) { setWithProfile('beamSize', v); }
+export function setTemperature(v: number) { setWithProfile('temperature', v); }
+export function setVadFilter(v: boolean) { setWithProfile('vadFilter', v); }
+export function setNoSpeechThreshold(v: number) { setWithProfile('noSpeechThreshold', v); }
+export function setLogProbThreshold(v: number) { setWithProfile('logProbThreshold', v); }
+export function setBestOf(v: number) { setWithProfile('bestOf', v); }
+export function setRepetitionPenalty(v: number) { setWithProfile('repetitionPenalty', v); }
+export function setNoRepeatNgramSize(v: number) { setWithProfile('noRepeatNgramSize', v); }
+export function setLengthPenalty(v: number) { setWithProfile('lengthPenalty', v); }
+export function setCompressionRatioThreshold(v: number) { setWithProfile('compressionRatioThreshold', v); }
+export function setPromptResetOnTemperature(v: number) { setWithProfile('promptResetOnTemperature', v); }
+export function setConditionOnPreviousText(v: boolean) { setWithProfile('conditionOnPreviousText', v); }
+export function setHotwords(v: string | null) { setWithProfile('hotwords', v); }
+export function setHallucinationSilenceThreshold(v: number) { setWithProfile('hallucinationSilenceThreshold', v); }
 
 export function addHistory(entry: HistoryEntry) {
   set({ history: [entry, ...state.history] });

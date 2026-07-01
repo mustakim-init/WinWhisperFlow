@@ -8,7 +8,8 @@ import { Select } from '../components/ui/Select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/Tabs';
 import { send } from '../bridge/ipc';
 import { useStore } from '../hooks/useStore';
-import { setFileMusicMode, setFileTranscript, setMusicTranscript, setVoiceTranscript } from '../lib/store';
+import { loadProfile, setFileMusicMode, setFileTranscript, setMusicTranscript, setVoiceTranscript } from '../lib/store';
+import { TuningPopover } from '../components/ui/TuningPopover';
 
 const languageOptions = [
   { label: 'Auto detect', value: 'auto' },
@@ -76,24 +77,19 @@ function FileResultView({ musicMode }: { musicMode: boolean }) {
   };
 
   const handleNewFile = () => {
+    if (store.fileTranscribing) return;
     setFileMusicMode(musicMode);
     send({ type: 'transcribe_file', musicMode });
   };
 
   useEffect(() => {
-    return () => {
-      const current = editRef.current;
-      if (musicMode) {
-        if (current !== store.musicTranscript) {
-          setMusicTranscript(current, store.musicMeta);
-        }
-      } else {
-        if (current !== store.fileTranscript) {
-          setFileTranscript(current, store.fileMeta);
-        }
-      }
-    };
-  }, []);
+    if (musicMode) {
+      setMusicTranscript(editText, store.musicMeta);
+    } else {
+      setFileTranscript(editText, store.fileMeta);
+    }
+  }, [editText, musicMode]);
+
 
   return (
     <div className="flex-1 min-h-0 flex flex-col">
@@ -191,9 +187,8 @@ function FileImportTab({ musicMode }: { musicMode: boolean }) {
 
   return (
     <div
-      className={`flex-1 flex flex-col items-center justify-center border border-dashed rounded-xl text-sm text-muted-foreground select-none gap-4 p-8 transition-colors ${
-        dragOver ? 'border-accent bg-accent/5 ring-1 ring-accent' : 'border-border/80'
-      }`}
+      className={`flex-1 flex flex-col items-center justify-center border border-dashed rounded-xl text-sm text-muted-foreground select-none gap-4 p-8 transition-colors ${dragOver ? 'border-accent bg-accent/5 ring-1 ring-accent' : 'border-border/80'
+        }`}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
@@ -204,7 +199,7 @@ function FileImportTab({ musicMode }: { musicMode: boolean }) {
       </span>
       <span className="text-xs text-muted-foreground/60">
         {musicMode
-          ? 'Audio will be separated (vocals removed from instruments) then transcribed'
+          ? 'Audio will be separated (vocals isolated from backing track/instruments) then transcribed'
           : 'File will be transcribed directly without source separation'}
       </span>
       <Button onClick={handleOpenFile} className="gap-2 mt-2">
@@ -240,22 +235,18 @@ function VoiceTranscriptView() {
 
   const metaText = store.isListening ? store.voicePartialMeta : store.voiceMeta;
 
-  // Sync editText from store whenever a new transcription arrives (isListening just ended)
   useEffect(() => {
     if (!store.isListening) {
       setEditText(store.voiceTranscript);
     }
   }, [store.isListening, store.voiceTranscript]);
 
-  // Persist edits to store on unmount (tab switch)
   useEffect(() => {
-    return () => {
-      const current = editRef.current;
-      if (current !== store.voiceTranscript) {
-        setVoiceTranscript(current, store.voiceMeta);
-      }
-    };
-  }, []);
+    if (!store.isListening) {
+      setVoiceTranscript(editText, store.voiceMeta);
+    }
+  }, [editText, store.isListening]);
+
 
   const handleCopy = () => {
     send({ type: 'copy_text', text: editText });
@@ -348,7 +339,7 @@ export function DictatePage() {
       <h1 className="shrink-0 pt-8 pb-4 text-2xl font-bold">Transcribe</h1>
 
       {/* Tabs root fills remaining space */}
-      <Tabs defaultValue="voice" onValueChange={setActiveTab} className="flex flex-col flex-1 min-h-0">
+      <Tabs defaultValue="voice" onValueChange={(val) => { setActiveTab(val); loadProfile(val === 'music' ? 'music' : 'voice'); }} className="flex flex-col flex-1 min-h-0">
         <TabsList className="shrink-0">
           <TabsTrigger value="voice" className="flex items-center gap-1.5">
             <Mic size={14} /> Voice
@@ -387,7 +378,8 @@ export function DictatePage() {
                 <>
                   <motion.button
                     onClick={handleToggle}
-                    disabled={store.modelLoading || store.fileTranscribing}
+                    disabled={store.modelLoading || store.fileTranscribing || store.phoneMicRunning}
+                    title={store.phoneMicRunning ? 'Stop phone mic first to use desktop recording' : ''}
                     className={`relative shrink-0 w-11 h-11 rounded-full flex items-center justify-center transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed ${
                       store.isListening
                         ? 'bg-red-500 text-white shadow-[0_0_16px_rgba(239,68,68,0.4)]'
@@ -449,7 +441,7 @@ export function DictatePage() {
               )}
             </div>
 
-            {/* Model + Language selectors */}
+            {/* Model + Language selectors + Tuning */}
             <div className="flex items-center gap-2 flex-1 min-w-0">
               {downloadedModels.length > 0 ? (
                 <Select
@@ -473,6 +465,7 @@ export function DictatePage() {
                 className="w-32"
                 label="Language"
               />
+              <TuningPopover />
             </div>
 
             {/* Loading spinner */}

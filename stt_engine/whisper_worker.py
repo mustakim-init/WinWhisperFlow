@@ -40,13 +40,13 @@ def trim_repetitive_tail(segments):
     return trimmed
 
 
-def filter_segments(segments):
+def filter_segments(segments, no_speech_threshold=0.6, log_prob_threshold=-0.8):
     seen = set()
     result = []
     for seg in segments:
-        if seg.no_speech_prob is not None and seg.no_speech_prob > 0.6:
+        if seg.no_speech_prob is not None and seg.no_speech_prob > no_speech_threshold:
             continue
-        if seg.avg_logprob is not None and seg.avg_logprob < -0.8:
+        if seg.avg_logprob is not None and seg.avg_logprob < log_prob_threshold:
             continue
         text = seg.text.strip()
         text_lower = text.lower()
@@ -67,7 +67,6 @@ def main():
     beam_size = int(os.environ.get("WINWHISPER_BEAM_SIZE", config.get("beam_size", 1)))
     vad_filter = os.environ.get("WINWHISPER_VAD_FILTER", str(config.get("vad_filter", False))).lower() in ("1", "true")
     vad_min_silence = int(os.environ.get("WINWHISPER_VAD_MIN_SILENCE", str(config.get("vad_min_silence_duration_ms", 300))))
-    default_language = os.environ.get("WINWHISPER_LANGUAGE", config.get("default_language", "en"))
     no_speech_threshold = float(os.environ.get("WINWHISPER_NO_SPEECH_THRESHOLD", str(config.get("no_speech_threshold", 0.45))))
     log_prob_threshold = float(os.environ.get("WINWHISPER_LOG_PROB_THRESHOLD", str(config.get("log_prob_threshold", -0.8))))
 
@@ -100,26 +99,34 @@ def main():
                 continue
 
             audio_path = request["audio_path"]
-            language = request.get("language") or default_language
+            language = request.get("language")
+            if not language:
+                language = None
             file_mode = request.get("file_mode", False)
+            req_beam_size = request.get("beam_size")
+            req_temperature = request.get("temperature")
+            req_vad_filter = request.get("vad_filter")
+            req_no_speech = request.get("no_speech_threshold")
+            req_log_prob = request.get("log_prob_threshold")
 
-            if file_mode:
+            # Per-request overrides for vad_filter, no_speech, log_prob
+            if req_vad_filter is not None:
+                use_vad = str(req_vad_filter).lower() in ("1", "true")
+            elif file_mode:
                 use_vad = False
-                use_no_speech = no_speech_threshold
-                use_log_prob = log_prob_threshold
-                use_temperature = 0
-                use_word_timestamps = False
             else:
                 use_vad = vad_filter
-                use_no_speech = no_speech_threshold
-                use_log_prob = log_prob_threshold
-                use_temperature = 0
-                use_word_timestamps = False
+
+            use_no_speech = float(req_no_speech) if req_no_speech is not None else no_speech_threshold
+            use_log_prob = float(req_log_prob) if req_log_prob is not None else log_prob_threshold
+            use_temperature = float(req_temperature) if req_temperature is not None else 0
+            use_word_timestamps = False
+            use_beam = int(req_beam_size) if req_beam_size is not None else beam_size
 
             transcribe_kwargs = dict(
                 audio=audio_path,
                 language=language,
-                beam_size=beam_size,
+                beam_size=use_beam,
                 vad_filter=use_vad,
                 vad_parameters={"min_silence_duration_ms": vad_min_silence},
                 condition_on_previous_text=False,
@@ -129,12 +136,28 @@ def main():
                 log_prob_threshold=use_log_prob,
             )
 
+            # Generic pass-through for remaining per-request keys
+            for key in ('best_of', 'patience', 'repetition_penalty', 'length_penalty',
+                        'no_repeat_ngram_size', 'compression_ratio_threshold',
+                        'prompt_reset_on_temperature', 'condition_on_previous_text',
+                        'hallucination_silence_threshold', 'hotwords',
+                        'suppress_blank', 'without_timestamps', 'word_timestamps',
+                        'initial_prompt', 'prefix', 'clip_timestamps', 'multilingual',
+                        'max_new_tokens', 'chunk_length', 'language_detection_threshold',
+                        'language_detection_segments'):
+                if key in request and request[key] is not None:
+                    transcribe_kwargs[key] = request[key]
+
             segments, info = model.transcribe(**transcribe_kwargs)
             segment_list = []
             for i, segment in enumerate(segments):
                 segment_list.append(segment)
                 if i > 0 and i % 10 == 0:
                     write({"type": "heartbeat", "segments_decoded": i})
+
+            if not file_mode:
+                segment_list = filter_segments(segment_list, use_no_speech, use_log_prob)
+            segment_list = trim_repetitive_tail(segment_list)
 
             text = "".join(segment.text for segment in segment_list).strip()
             avg_log_values = [
