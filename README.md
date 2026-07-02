@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="Icon.ico" width="72" alt="WinWhisper Flow icon" />
+<img src="Icon.png" width="72" alt="WinWhisper Flow icon" />
 
 # WinWhisper Flow
 
